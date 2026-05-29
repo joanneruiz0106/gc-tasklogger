@@ -6,6 +6,11 @@ const SPREADSHEET_TAB = "Friday Report";
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 const TODAY_IDX = Math.min(Math.max(new Date().getDay() - 1, 0), 4);
 
+// Column indices (0-based): B=1, E=4, M=12
+const COL_SALES = 1;
+const COL_SERVICE = 4;
+const COL_DM = 12;
+
 function getCurrentWeekOf() {
   const now = new Date();
   const day = now.getDay();
@@ -19,27 +24,30 @@ function getSpreadsheetIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
-// Detect day from transcript text
+function colLetter(idx) {
+  return String.fromCharCode(65 + idx); // 0→A, 1→B, 4→E, 12→M
+}
+
 function detectDayFromText(text) {
   const t = text.toLowerCase();
-  const todayIdx = TODAY_IDX;
-  if (t.includes("yesterday")) return Math.max(todayIdx - 1, 0);
+  if (t.includes("yesterday")) return Math.max(TODAY_IDX - 1, 0);
   if (t.includes("monday")) return 0;
   if (t.includes("tuesday")) return 1;
   if (t.includes("wednesday")) return 2;
   if (t.includes("thursday")) return 3;
   if (t.includes("friday")) return 4;
-  if (t.includes("today") || t.includes("this morning") || t.includes("this afternoon")) return todayIdx;
-  return null; // no day detected
+  if (t.includes("today") || t.includes("this morning") || t.includes("this afternoon")) return TODAY_IDX;
+  return null;
 }
 
-// Detect entry type from transcript
 function detectTypeFromText(text) {
   const t = text.toLowerCase();
-  const serviceKeywords = ["service", "serviced", "service call", "fsr", "treatment", "chemical", "dosing", "sampling", "disinfection", "legionella", "boiler", "cooling tower", "repair", "installed", "maintenance"];
-  const adminKeywords = ["admin", "administrative", "fsr completion", "paperwork", "report", "conference call", "meeting with team", "office"];
-  for (const k of serviceKeywords) if (t.includes(k)) return "service";
-  for (const k of adminKeywords) if (t.includes(k)) return "admin";
+  const dmKw = ["district manager", "corporate support", "dm request", "support request", "dm support", "manager support"];
+  const serviceKw = ["service", "serviced", "fsr", "treatment", "chemical", "dosing", "sampling", "disinfection", "legionella", "boiler", "cooling tower", "repair", "installed", "maintenance"];
+  const adminKw = ["admin", "administrative", "fsr completion", "paperwork", "conference call", "meeting with team"];
+  for (const k of dmKw) if (t.includes(k)) return "dm";
+  for (const k of serviceKw) if (t.includes(k)) return "service";
+  for (const k of adminKw) if (t.includes(k)) return "admin";
   return "sales";
 }
 
@@ -156,13 +164,10 @@ export default function App() {
   async function processWithAI() {
     if (!currentTranscript.trim()) return;
     setIsProcessing(true); setAiProcessed(""); setAiSuggestedDay(null); setAiSuggestedType(null);
-
-    // Detect day and type immediately from transcript
     const detectedDay = detectDayFromText(currentTranscript);
     const detectedType = detectTypeFromText(currentTranscript);
     if (detectedDay !== null) setAiSuggestedDay(detectedDay);
-    if (detectedType) setAiSuggestedType(detectedType);
-
+    setAiSuggestedType(detectedType);
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -172,9 +177,7 @@ export default function App() {
           max_tokens: 1000,
           messages: [{
             role: "user",
-            content: `You are a field sales rep assistant for Garratt-Callahan water treatment. Clean up this voice-dictated work log into a concise professional one-liner under 25 words. Preserve customer names, actions taken, and next steps. Remove day references like "yesterday" or "today". Remove filler words. Respond with ONLY the cleaned text, nothing else.
-
-Raw dictation: "${currentTranscript}"`
+            content: `You are a field sales rep assistant for Garratt-Callahan water treatment. Clean up this voice-dictated work log into a concise professional one-liner under 25 words. Preserve customer names, actions taken, and next steps. Remove day references like "yesterday" or "today". Remove filler words. Respond with ONLY the cleaned text, nothing else.\n\nRaw dictation: "${currentTranscript}"`
           }],
         }),
       });
@@ -203,50 +206,63 @@ Raw dictation: "${currentTranscript}"`
 
   async function syncToSheet() {
     if (!spreadsheetId || !accessToken) return;
-    setIsSyncing(true); setSyncStatus("Reading sheet structure..."); setSyncLog([]);
+    setIsSyncing(true); setSyncStatus("Reading sheet..."); setSyncLog([]);
 
     try {
-      // Read the sheet to find row positions
       const readRes = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(SPREADSHEET_TAB)}!A1:N60`,
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(SPREADSHEET_TAB)}!A1:N80`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       const readData = await readRes.json();
-      if (readData.error) { setSyncStatus(`⚠️ Read error: ${readData.error.message}`); setIsSyncing(false); return; }
+      if (readData.error) { setSyncStatus(`⚠️ ${readData.error.message}`); setIsSyncing(false); return; }
 
       const rows = readData.values || [];
-      const log = [`📋 Sheet has ${rows.length} rows`];
+      const log = [];
 
-      // Find day rows
-      const dayRowMap = {};
+      // Find day row positions
+      const dayPositions = {};
       rows.forEach((row, idx) => {
         const cell = (row[0] || "").trim().toLowerCase();
-        DAYS.forEach((d) => { if (cell.startsWith(d.toLowerCase())) { dayRowMap[d] = idx + 1; log.push(`📍 Found ${d} at row ${idx + 1}`); } });
+        DAYS.forEach((d) => { if (cell.startsWith(d.toLowerCase())) dayPositions[d] = idx; });
       });
+      log.push(`📍 Days: ${Object.entries(dayPositions).map(([d, r]) => `${d}=row${r + 1}`).join(", ")}`);
+
+      // Find next empty row for a given column within a day's block
+      function findNextEmptyRow(colIdx, startRow, endRow) {
+        for (let r = startRow; r < endRow; r++) {
+          const val = rows[r]?.[colIdx]?.toString().trim() || "";
+          if (!val) return r;
+        }
+        return endRow - 1; // fallback: last row in block
+      }
 
       const batchData = [];
 
       DAYS.forEach((day, dayIdx) => {
         const dayEntries = entries[dayIdx];
         if (!dayEntries.length) return;
-        const rowNum = dayRowMap[day];
-        if (!rowNum) { log.push(`⚠️ Could not find row for ${day}`); return; }
 
-        const salesLines = dayEntries.filter((e) => e.type === "sales" || e.type === "admin").map((e) => e.text);
-        const serviceLines = dayEntries.filter((e) => e.type === "service").map((e) => e.text);
+        const dayRow = dayPositions[day];
+        if (dayRow === undefined) { log.push(`⚠️ "${day}" not found in sheet`); return; }
 
-        // Write sales to col B (offset +1 from day row)
-        if (salesLines.length) {
-          const range = `'${SPREADSHEET_TAB}'!B${rowNum + 1}`;
-          batchData.push({ range, values: [[salesLines.join("\n")]] });
-          log.push(`✍️ Writing sales to ${range}`);
-        }
-        // Write service to col E (offset +1 from day row)
-        if (serviceLines.length) {
-          const range = `'${SPREADSHEET_TAB}'!E${rowNum + 1}`;
-          batchData.push({ range, values: [[serviceLines.join("\n")]] });
-          log.push(`✍️ Writing service to ${range}`);
-        }
+        const nextDayRow = DAYS.slice(dayIdx + 1).reduce((found, nd) => {
+          return found !== null ? found : (dayPositions[nd] !== undefined ? dayPositions[nd] : null);
+        }, null) ?? rows.length;
+
+        // Track cursors per column so multiple entries stack
+        const cursors = { [COL_SALES]: dayRow + 1, [COL_SERVICE]: dayRow + 1, [COL_DM]: dayRow + 1 };
+
+        dayEntries.forEach((entry) => {
+          const colIdx = entry.type === "service" ? COL_SERVICE : entry.type === "dm" ? COL_DM : COL_SALES;
+          let targetRow = cursors[colIdx];
+          // Skip already-filled cells
+          while (targetRow < nextDayRow && rows[targetRow]?.[colIdx]?.toString().trim()) targetRow++;
+          if (targetRow >= nextDayRow) targetRow = nextDayRow - 1;
+          const range = `'${SPREADSHEET_TAB}'!${colLetter(colIdx)}${targetRow + 1}`;
+          batchData.push({ range, values: [[entry.text]] });
+          log.push(`✍️ ${day} [${entry.type}] → ${range}`);
+          cursors[colIdx] = targetRow + 1;
+        });
       });
 
       // Q&A rows
@@ -254,23 +270,14 @@ Raw dictation: "${currentTranscript}"`
       rows.forEach((row, idx) => {
         const cell = (row[0] || "").toLowerCase();
         Object.entries(qaMap).forEach(([key, kw]) => {
-          if (cell.includes(kw) && qaAnswers[key]) {
-            const range = `'${SPREADSHEET_TAB}'!B${idx + 2}`;
-            batchData.push({ range, values: [[qaAnswers[key]]] });
-            log.push(`✍️ Writing Q&A "${key}" to ${range}`);
-          }
+          if (cell.includes(kw) && qaAnswers[key])
+            batchData.push({ range: `'${SPREADSHEET_TAB}'!B${idx + 2}`, values: [[qaAnswers[key]]] });
         });
       });
 
-      if (!batchData.length) {
-        setSyncStatus("⚠️ No matching rows found. Check sheet structure.");
-        setSyncLog(log);
-        setIsSyncing(false);
-        return;
-      }
+      if (!batchData.length) { setSyncStatus("⚠️ No entries to sync or no matching rows found."); setSyncLog(log); setIsSyncing(false); return; }
 
-      setSyncStatus(`Writing ${batchData.length} updates...`);
-
+      setSyncStatus(`Writing ${batchData.length} update(s)...`);
       const writeRes = await fetch(
         `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
         {
@@ -282,21 +289,28 @@ Raw dictation: "${currentTranscript}"`
       const writeData = await writeRes.json();
       if (writeData.error) {
         setSyncStatus(`⚠️ Write error: ${writeData.error.message}`);
-        log.push(`❌ Error: ${writeData.error.message}`);
+        log.push(`❌ ${writeData.error.message}`);
       } else {
-        setSyncStatus(`✅ Synced ${batchData.length} update(s) to Google Sheets!`);
-        log.push(`✅ Success! ${batchData.length} cells updated.`);
+        setSyncStatus(`✅ Synced ${batchData.length} entr${batchData.length === 1 ? "y" : "ies"} to Google Sheets!`);
+        log.push(`✅ Done — ${batchData.length} cells written.`);
+        setEntries({ 0: [], 1: [], 2: [], 3: [], 4: [] });
+        setQaAnswers({ renewals: "", jeopardy: "", tssSupport: "", growth: "", comments: "" });
       }
       setSyncLog(log);
-    } catch (e) {
-      setSyncStatus(`⚠️ Sync failed: ${e.message}`);
-    }
+    } catch (e) { setSyncStatus(`⚠️ Sync failed: ${e.message}`); }
     setIsSyncing(false);
   }
 
   const isLoggedIn = !!accessToken;
   const totalEntries = Object.values(entries).flat().length;
   const hasSuggestions = aiSuggestedDay !== null || aiSuggestedType !== null;
+
+  const TYPE_CONFIG = [
+    { id: "sales", label: "💼 Sales / Biz Dev", col: "#1a6b3c" },
+    { id: "service", label: "🔧 Service Call", col: "#1a4b8a" },
+    { id: "admin", label: "📁 Admin", col: "#6b451a" },
+    { id: "dm", label: "🏢 DM Support", col: "#6b1a5a" },
+  ];
 
   return (
     <div style={S.root}>
@@ -351,7 +365,6 @@ Raw dictation: "${currentTranscript}"`
               <span style={{ marginLeft: "auto", color: "#64748b", fontSize: 11 }}>Week of {getCurrentWeekOf()}</span>
             </div>
 
-            {/* Day Tabs */}
             <div style={S.dayRow}>
               {DAYS.map((d, i) => (
                 <button key={d} style={{ ...S.dayBtn, ...(selectedDay === i ? S.dayBtnActive : {}) }} onClick={() => setSelectedDay(i)}>
@@ -361,22 +374,19 @@ Raw dictation: "${currentTranscript}"`
               ))}
             </div>
 
-            {/* Entry Type */}
-            <div style={S.typeRow}>
-              {[
-                { id: "sales", label: "💼 Sales / Biz Dev", col: "#1a6b3c" },
-                { id: "service", label: "🔧 Service Call", col: "#1a4b8a" },
-                { id: "admin", label: "📁 Admin", col: "#6b451a" },
-              ].map((t) => (
+            {/* 2x2 type grid */}
+            <div style={S.typeGrid}>
+              {TYPE_CONFIG.map((t) => (
                 <button key={t.id} style={{ ...S.typeBtn, ...(entryType === t.id ? { background: t.col, color: "#fff", borderColor: t.col } : {}) }} onClick={() => setEntryType(t.id)}>
                   {t.label}
                 </button>
               ))}
             </div>
 
-            {/* Recorder */}
             <div style={S.card}>
-              <div style={S.cardTitle}>{DAYS[selectedDay]} — {entryType === "sales" ? "Sales / Business" : entryType === "service" ? "Service Call" : "Admin"}</div>
+              <div style={S.cardTitle}>
+                {DAYS[selectedDay]} — {TYPE_CONFIG.find(t => t.id === entryType)?.label}
+              </div>
 
               <button style={{ ...S.recordBtn, ...(isRecording ? S.recordBtnActive : {}) }} onClick={toggleRecording}>
                 <span style={{ fontSize: 24 }}>{isRecording ? "⏹" : "🎙️"}</span>
@@ -397,13 +407,12 @@ Raw dictation: "${currentTranscript}"`
                 </button>
               )}
 
-              {/* AI Suggestions Banner */}
               {hasSuggestions && (
                 <div style={S.suggestionBanner}>
                   <div style={S.suggestionText}>
                     🤖 AI detected:
                     {aiSuggestedDay !== null && <span style={S.suggestionChip}>{DAYS[aiSuggestedDay]}</span>}
-                    {aiSuggestedType && <span style={S.suggestionChip}>{aiSuggestedType === "sales" ? "💼 Sales" : aiSuggestedType === "service" ? "🔧 Service" : "📁 Admin"}</span>}
+                    {aiSuggestedType && <span style={S.suggestionChip}>{TYPE_CONFIG.find(t => t.id === aiSuggestedType)?.label}</span>}
                   </div>
                   <button style={S.suggestionBtn} onClick={acceptAISuggestions}>Apply</button>
                 </div>
@@ -421,7 +430,6 @@ Raw dictation: "${currentTranscript}"`
               )}
             </div>
 
-            {/* Entries by Day */}
             {DAYS.map((day, dayIdx) => {
               const de = entries[dayIdx];
               if (!de.length) return null;
@@ -430,7 +438,9 @@ Raw dictation: "${currentTranscript}"`
                   <div style={S.entriesDay}>{day}</div>
                   {de.map((e, i) => (
                     <div key={i} style={S.entryRow}>
-                      <span style={{ fontSize: 16, flexShrink: 0 }}>{e.type === "sales" ? "💼" : e.type === "service" ? "🔧" : "📁"}</span>
+                      <span style={{ fontSize: 16, flexShrink: 0 }}>
+                        {e.type === "sales" ? "💼" : e.type === "service" ? "🔧" : e.type === "dm" ? "🏢" : "📁"}
+                      </span>
                       <span style={{ flex: 1, fontSize: 13, color: "#e2e8f0", lineHeight: 1.4 }}>{e.text}</span>
                       <button style={S.removeBtn} onClick={() => removeEntry(dayIdx, i)}>✕</button>
                     </div>
@@ -439,7 +449,6 @@ Raw dictation: "${currentTranscript}"`
               );
             })}
 
-            {/* Q&A */}
             <div style={S.card}>
               <div style={S.cardTitle}>📋 End-of-Week Questions</div>
               {[
@@ -456,7 +465,6 @@ Raw dictation: "${currentTranscript}"`
               ))}
             </div>
 
-            {/* Sync */}
             <div style={{ marginBottom: 24 }}>
               {syncStatus && <div style={S.statusMsg}>{syncStatus}</div>}
               {syncLog.length > 0 && (
@@ -466,8 +474,7 @@ Raw dictation: "${currentTranscript}"`
               )}
               <button
                 style={{ ...S.syncBtn, ...(isSyncing || !totalEntries ? S.syncBtnOff : {}) }}
-                onClick={syncToSheet}
-                disabled={isSyncing || !totalEntries}
+                onClick={syncToSheet} disabled={isSyncing || !totalEntries}
               >
                 {isSyncing ? "Syncing..." : `📤 Sync ${totalEntries} Entr${totalEntries === 1 ? "y" : "ies"} to Google Sheets`}
               </button>
@@ -504,8 +511,8 @@ const S = {
   dayBtn: { flex: 1, background: "#1e293b", border: "1px solid #334155", borderRadius: 10, padding: "8px 4px", color: "#94a3b8", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 3 },
   dayBtnActive: { background: "#2563eb", borderColor: "#2563eb", color: "#fff" },
   dayCount: { background: "#ef4444", color: "#fff", borderRadius: 999, fontSize: 10, fontWeight: 700, padding: "1px 5px" },
-  typeRow: { display: "flex", gap: 6, marginBottom: 12 },
-  typeBtn: { flex: 1, background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: "8px 4px", color: "#94a3b8", fontSize: 11, fontWeight: 600, cursor: "pointer" },
+  typeGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 12 },
+  typeBtn: { background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: "10px 6px", color: "#94a3b8", fontSize: 12, fontWeight: 600, cursor: "pointer" },
   recordBtn: { width: "100%", background: "#1a4b1a", border: "2px solid #22c55e", borderRadius: 12, padding: 18, color: "#4ade80", fontSize: 16, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 12 },
   recordBtnActive: { background: "#4a1a1a", border: "2px solid #ef4444", color: "#f87171" },
   listeningBadge: { textAlign: "center", color: "#f87171", fontSize: 12, fontWeight: 600, marginBottom: 8 },
@@ -527,5 +534,6 @@ const S = {
   syncBtn: { width: "100%", background: "#1d4ed8", border: "none", borderRadius: 12, padding: 16, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" },
   syncBtnOff: { background: "#334155", color: "#64748b", cursor: "not-allowed" },
   statusMsg: { fontSize: 13, color: "#94a3b8", marginBottom: 8, padding: "8px 12px", background: "#0f172a", borderRadius: 8 },
-  syncLogBox: { background: "#0f172a", borderRadius: 8, padding: "8px 12px", marginBottom: 8, border: "1px solid #1e293b" },
+  syncLogBox: { background: "#0f172a", borderRadius: 8, padding: "8px 12px", marginBottom: 8, border: "1px solid #1e293b", maxHeight: 120, overflowY: "auto" },
 };
+
