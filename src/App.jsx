@@ -5,11 +5,9 @@ const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
 const SPREADSHEET_TAB = "Friday Report";
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 const TODAY_IDX = Math.min(Math.max(new Date().getDay() - 1, 0), 4);
-
-// Column indices (0-based): B=1, E=4, M=12
-const COL_SALES = 1;
-const COL_SERVICE = 4;
-const COL_DM = 12;
+const COL_SALES = 1;   // B
+const COL_SERVICE = 4; // E
+const COL_DM = 12;     // M
 
 function getCurrentWeekOf() {
   const now = new Date();
@@ -25,7 +23,7 @@ function getSpreadsheetIdFromUrl(url) {
 }
 
 function colLetter(idx) {
-  return String.fromCharCode(65 + idx); // 0→A, 1→B, 4→E, 12→M
+  return idx < 26 ? String.fromCharCode(65 + idx) : "A" + String.fromCharCode(65 + idx - 26);
 }
 
 function detectDayFromText(text) {
@@ -80,6 +78,7 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState("");
   const [syncLog, setSyncLog] = useState([]);
+  const [showLog, setShowLog] = useState(false);
 
   const [isRecording, isRecordingRef, setIsRecording] = useStateRef(false);
   const recognitionRef = useRef(null);
@@ -131,28 +130,34 @@ export default function App() {
       const data = await res.json();
       if (data.error) { setSyncStatus(`⚠️ ${data.error.message}`); return; }
       const tabs = data.sheets?.map((s) => s.properties.title) || [];
-      if (!tabs.includes(SPREADSHEET_TAB)) { setSyncStatus(`⚠️ Tab "${SPREADSHEET_TAB}" not found. Tabs: ${tabs.join(", ")}`); return; }
+      if (!tabs.includes(SPREADSHEET_TAB)) { setSyncStatus(`⚠️ Tab "${SPREADSHEET_TAB}" not found. Found: ${tabs.join(", ")}`); return; }
       setSpreadsheetId(id); setSheetName(data.properties?.title || ""); setSheetConnected(true);
       setSyncStatus(`✅ Connected to "${data.properties?.title}"`);
-    } catch { setSyncStatus("⚠️ Could not connect. Check the URL."); }
+    } catch (e) { setSyncStatus(`⚠️ ${e.message}`); }
   }
 
   function startRecording() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { setSyncStatus("⚠️ Voice not supported. Use Chrome (Android) or Safari (iOS)."); return; }
     const rec = new SR();
-    rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
-    let final = "";
+    // Single-shot mode works best on mobile — no looping
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.lang = "en-US";
     rec.onresult = (e) => {
-      let interim = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) final += e.results[i][0].transcript + " ";
-        else interim += e.results[i][0].transcript;
+      let full = "";
+      for (let i = 0; i < e.results.length; i++) {
+        full += e.results[i][0].transcript + " ";
       }
-      setCurrentTranscript(final + interim);
+      setCurrentTranscript(full.trim());
     };
-    rec.onerror = () => setIsRecording(false);
-    rec.onend = () => setIsRecording(false);
+    rec.onerror = (e) => {
+      console.log("Speech error:", e.error);
+      setIsRecording(false);
+    };
+    rec.onend = () => {
+      setIsRecording(false);
+    };
     rec.start();
     recognitionRef.current = rec;
     setIsRecording(true);
@@ -169,16 +174,27 @@ export default function App() {
     if (detectedDay !== null) setAiSuggestedDay(detectedDay);
     setAiSuggestedType(detectedType);
     try {
+      // Deduplicate repeated phrases before sending to AI
+      const words = currentTranscript.split(" ");
+      const deduped = [];
+      const seen = new Set();
+      // Use sliding 6-word window dedup to catch looping
+      for (let i = 0; i < words.length; i++) {
+        const chunk = words.slice(i, i + 6).join(" ").toLowerCase();
+        if (!seen.has(chunk)) {
+          deduped.push(words[i]);
+          seen.add(chunk);
+        }
+      }
+      const cleanedInput = deduped.join(" ").slice(0, 500); // cap at 500 chars
+
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
-          messages: [{
-            role: "user",
-            content: `You are a field sales rep assistant for Garratt-Callahan water treatment. Clean up this voice-dictated work log into a concise professional one-liner under 25 words. Preserve customer names, actions taken, and next steps. Remove day references like "yesterday" or "today". Remove filler words. Respond with ONLY the cleaned text, nothing else.\n\nRaw dictation: "${currentTranscript}"`
-          }],
+          messages: [{ role: "user", content: `You are a field sales assistant for Garratt-Callahan water treatment. The text below is a voice-dictated work log that may contain repeated or garbled phrases due to voice recognition. Extract the unique meaningful content and rewrite it as a single clean professional sentence under 25 words. Preserve customer names, actions taken, and next steps. Remove all repetition, filler words, and day references. Respond with ONLY the cleaned sentence.\n\nRaw dictation: "${cleanedInput}"` }],
         }),
       });
       const data = await res.json();
@@ -196,7 +212,7 @@ export default function App() {
   function addEntry() {
     const text = aiProcessed || currentTranscript;
     if (!text.trim()) return;
-    setEntries((prev) => ({ ...prev, [selectedDay]: [...prev[selectedDay], { type: entryType, text, raw: currentTranscript }] }));
+    setEntries((prev) => ({ ...prev, [selectedDay]: [...prev[selectedDay], { type: entryType, text }] }));
     setCurrentTranscript(""); setAiProcessed(""); setAiSuggestedDay(null); setAiSuggestedType(null);
   }
 
@@ -206,34 +222,50 @@ export default function App() {
 
   async function syncToSheet() {
     if (!spreadsheetId || !accessToken) return;
-    setIsSyncing(true); setSyncStatus("Reading sheet..."); setSyncLog([]);
+    setIsSyncing(true); setSyncStatus("Reading sheet..."); setSyncLog([]); setShowLog(true);
+    const log = [];
 
     try {
+      // Read enough rows to cover whole report
+      const range = encodeURIComponent(`${SPREADSHEET_TAB}!A1:N80`);
       const readRes = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(SPREADSHEET_TAB)}!A1:N80`,
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       const readData = await readRes.json();
-      if (readData.error) { setSyncStatus(`⚠️ ${readData.error.message}`); setIsSyncing(false); return; }
+
+      if (readData.error) {
+        log.push(`❌ Read error: ${readData.error.message}`);
+        setSyncStatus(`⚠️ ${readData.error.message}`); setSyncLog(log); setIsSyncing(false); return;
+      }
 
       const rows = readData.values || [];
-      const log = [];
+      log.push(`📋 Read ${rows.length} rows from sheet`);
 
-      // Find day row positions
+      // Log first column of every row to find day labels
+      log.push("--- Col A scan ---");
+      rows.forEach((row, i) => {
+        const a = (row[0] || "").trim();
+        if (a) log.push(`Row ${i + 1}: "${a}"`);
+      });
+      log.push("--- end scan ---");
+
+      // Find day positions (case-insensitive, trim)
       const dayPositions = {};
       rows.forEach((row, idx) => {
         const cell = (row[0] || "").trim().toLowerCase();
-        DAYS.forEach((d) => { if (cell.startsWith(d.toLowerCase())) dayPositions[d] = idx; });
+        DAYS.forEach((d) => {
+          if (cell === d.toLowerCase() || cell.startsWith(d.toLowerCase() + " ")) {
+            dayPositions[d] = idx;
+          }
+        });
       });
-      log.push(`📍 Days: ${Object.entries(dayPositions).map(([d, r]) => `${d}=row${r + 1}`).join(", ")}`);
 
-      // Find next empty row for a given column within a day's block
-      function findNextEmptyRow(colIdx, startRow, endRow) {
-        for (let r = startRow; r < endRow; r++) {
-          const val = rows[r]?.[colIdx]?.toString().trim() || "";
-          if (!val) return r;
-        }
-        return endRow - 1; // fallback: last row in block
+      log.push(`📍 Found days: ${JSON.stringify(dayPositions)}`);
+
+      if (Object.keys(dayPositions).length === 0) {
+        log.push("⚠️ No day labels found! Check that Monday/Tuesday etc are in column A");
+        setSyncStatus("⚠️ Day labels not found in sheet column A"); setSyncLog(log); setIsSyncing(false); return;
       }
 
       const batchData = [];
@@ -243,41 +275,61 @@ export default function App() {
         if (!dayEntries.length) return;
 
         const dayRow = dayPositions[day];
-        if (dayRow === undefined) { log.push(`⚠️ "${day}" not found in sheet`); return; }
+        if (dayRow === undefined) { log.push(`⚠️ No row found for "${day}"`); return; }
 
+        // Find next day's row as block boundary
         const nextDayRow = DAYS.slice(dayIdx + 1).reduce((found, nd) => {
           return found !== null ? found : (dayPositions[nd] !== undefined ? dayPositions[nd] : null);
         }, null) ?? rows.length;
 
-        // Track cursors per column so multiple entries stack
+        log.push(`📅 ${day}: dayRow=${dayRow + 1}, nextDay=${nextDayRow + 1}, block=${nextDayRow - dayRow - 1} rows`);
+
+        // Cursor per column — start 1 row below day label
         const cursors = { [COL_SALES]: dayRow + 1, [COL_SERVICE]: dayRow + 1, [COL_DM]: dayRow + 1 };
 
         dayEntries.forEach((entry) => {
           const colIdx = entry.type === "service" ? COL_SERVICE : entry.type === "dm" ? COL_DM : COL_SALES;
-          let targetRow = cursors[colIdx];
-          // Skip already-filled cells
-          while (targetRow < nextDayRow && rows[targetRow]?.[colIdx]?.toString().trim()) targetRow++;
-          if (targetRow >= nextDayRow) targetRow = nextDayRow - 1;
-          const range = `'${SPREADSHEET_TAB}'!${colLetter(colIdx)}${targetRow + 1}`;
-          batchData.push({ range, values: [[entry.text]] });
-          log.push(`✍️ ${day} [${entry.type}] → ${range}`);
-          cursors[colIdx] = targetRow + 1;
+          let r = cursors[colIdx];
+          // Skip filled cells
+          while (r < nextDayRow && (rows[r]?.[colIdx] || "").toString().trim() !== "") r++;
+          // If block is full, write to last row anyway
+          if (r >= nextDayRow) r = nextDayRow - 1;
+          const cellRef = `${colLetter(colIdx)}${r + 1}`;
+          const sheetRange = `'${SPREADSHEET_TAB}'!${cellRef}`;
+          batchData.push({ range: sheetRange, values: [[entry.text]] });
+          log.push(`✍️ ${day}/${entry.type} → ${cellRef}: "${entry.text.slice(0, 30)}"`);
+          cursors[colIdx] = r + 1;
         });
       });
 
-      // Q&A rows
-      const qaMap = { renewals: "renewed and up to date", jeopardy: "jeopardy", tssSupport: "tss support", growth: "personal dev", comments: "other comments" };
+      // Q&A
+      const qaMap = {
+        renewals: ["renewed", "up to date", "expired"],
+        jeopardy: ["jeopardy"],
+        tssSupport: ["tss support", "tss"],
+        growth: ["personal dev", "growth"],
+        comments: ["other comments", "comments"],
+      };
       rows.forEach((row, idx) => {
         const cell = (row[0] || "").toLowerCase();
-        Object.entries(qaMap).forEach(([key, kw]) => {
-          if (cell.includes(kw) && qaAnswers[key])
-            batchData.push({ range: `'${SPREADSHEET_TAB}'!B${idx + 2}`, values: [[qaAnswers[key]]] });
+        Object.entries(qaMap).forEach(([key, keywords]) => {
+          if (qaAnswers[key] && keywords.some(kw => cell.includes(kw))) {
+            const r = `'${SPREADSHEET_TAB}'!B${idx + 2}`;
+            batchData.push({ range: r, values: [[qaAnswers[key]]] });
+            log.push(`✍️ Q&A ${key} → B${idx + 2}`);
+          }
         });
       });
 
-      if (!batchData.length) { setSyncStatus("⚠️ No entries to sync or no matching rows found."); setSyncLog(log); setIsSyncing(false); return; }
+      log.push(`📦 Total updates to write: ${batchData.length}`);
 
-      setSyncStatus(`Writing ${batchData.length} update(s)...`);
+      if (!batchData.length) {
+        setSyncStatus("⚠️ Nothing to write — check sync log");
+        setSyncLog(log); setIsSyncing(false); return;
+      }
+
+      setSyncStatus(`Writing ${batchData.length} cell(s)...`);
+
       const writeRes = await fetch(
         `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
         {
@@ -287,17 +339,22 @@ export default function App() {
         }
       );
       const writeData = await writeRes.json();
+
       if (writeData.error) {
-        setSyncStatus(`⚠️ Write error: ${writeData.error.message}`);
-        log.push(`❌ ${writeData.error.message}`);
+        log.push(`❌ Write error: ${writeData.error.message}`);
+        setSyncStatus(`⚠️ ${writeData.error.message}`);
       } else {
-        setSyncStatus(`✅ Synced ${batchData.length} entr${batchData.length === 1 ? "y" : "ies"} to Google Sheets!`);
-        log.push(`✅ Done — ${batchData.length} cells written.`);
+        log.push(`✅ Success! updatedCells=${writeData.totalUpdatedCells}`);
+        setSyncStatus(`✅ Synced! ${writeData.totalUpdatedCells} cell(s) updated.`);
         setEntries({ 0: [], 1: [], 2: [], 3: [], 4: [] });
         setQaAnswers({ renewals: "", jeopardy: "", tssSupport: "", growth: "", comments: "" });
       }
-      setSyncLog(log);
-    } catch (e) { setSyncStatus(`⚠️ Sync failed: ${e.message}`); }
+    } catch (e) {
+      log.push(`❌ Exception: ${e.message}`);
+      setSyncStatus(`⚠️ ${e.message}`);
+    }
+
+    setSyncLog(log);
     setIsSyncing(false);
   }
 
@@ -374,7 +431,6 @@ export default function App() {
               ))}
             </div>
 
-            {/* 2x2 type grid */}
             <div style={S.typeGrid}>
               {TYPE_CONFIG.map((t) => (
                 <button key={t.id} style={{ ...S.typeBtn, ...(entryType === t.id ? { background: t.col, color: "#fff", borderColor: t.col } : {}) }} onClick={() => setEntryType(t.id)}>
@@ -384,9 +440,7 @@ export default function App() {
             </div>
 
             <div style={S.card}>
-              <div style={S.cardTitle}>
-                {DAYS[selectedDay]} — {TYPE_CONFIG.find(t => t.id === entryType)?.label}
-              </div>
+              <div style={S.cardTitle}>{DAYS[selectedDay]} — {TYPE_CONFIG.find(t => t.id === entryType)?.label}</div>
 
               <button style={{ ...S.recordBtn, ...(isRecording ? S.recordBtnActive : {}) }} onClick={toggleRecording}>
                 <span style={{ fontSize: 24 }}>{isRecording ? "⏹" : "🎙️"}</span>
@@ -467,11 +521,20 @@ export default function App() {
 
             <div style={{ marginBottom: 24 }}>
               {syncStatus && <div style={S.statusMsg}>{syncStatus}</div>}
+
               {syncLog.length > 0 && (
-                <div style={S.syncLogBox}>
-                  {syncLog.map((l, i) => <div key={i} style={{ fontSize: 11, color: "#64748b", marginBottom: 2 }}>{l}</div>)}
+                <div style={{ marginBottom: 8 }}>
+                  <button style={S.logToggle} onClick={() => setShowLog(v => !v)}>
+                    {showLog ? "▲ Hide" : "▼ Show"} Sync Log ({syncLog.length} lines)
+                  </button>
+                  {showLog && (
+                    <div style={S.syncLogBox}>
+                      {syncLog.map((l, i) => <div key={i} style={{ fontSize: 11, color: l.startsWith("❌") ? "#f87171" : l.startsWith("✅") ? "#4ade80" : l.startsWith("✍️") ? "#93c5fd" : "#64748b", marginBottom: 2 }}>{l}</div>)}
+                    </div>
+                  )}
                 </div>
               )}
+
               <button
                 style={{ ...S.syncBtn, ...(isSyncing || !totalEntries ? S.syncBtnOff : {}) }}
                 onClick={syncToSheet} disabled={isSyncing || !totalEntries}
@@ -534,6 +597,6 @@ const S = {
   syncBtn: { width: "100%", background: "#1d4ed8", border: "none", borderRadius: 12, padding: 16, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" },
   syncBtnOff: { background: "#334155", color: "#64748b", cursor: "not-allowed" },
   statusMsg: { fontSize: 13, color: "#94a3b8", marginBottom: 8, padding: "8px 12px", background: "#0f172a", borderRadius: 8 },
-  syncLogBox: { background: "#0f172a", borderRadius: 8, padding: "8px 12px", marginBottom: 8, border: "1px solid #1e293b", maxHeight: 120, overflowY: "auto" },
+  logToggle: { background: "transparent", border: "1px solid #334155", borderRadius: 6, padding: "4px 10px", color: "#64748b", fontSize: 11, cursor: "pointer", marginBottom: 4, width: "100%" },
+  syncLogBox: { background: "#0f172a", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e293b", maxHeight: 200, overflowY: "auto" },
 };
-
