@@ -1,11 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
-// ─── CONFIG ────────────────────────────────────────────────────────────────
-// Replace with your Google OAuth Client ID from console.cloud.google.com
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "YOUR_GOOGLE_CLIENT_ID";
 const SCOPES = "https://www.googleapis.com/auth/spreadsheets";
 const SPREADSHEET_TAB = "Friday Report";
-
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 const TODAY_IDX = Math.min(Math.max(new Date().getDay() - 1, 0), 4);
 
@@ -22,14 +19,35 @@ function getSpreadsheetIdFromUrl(url) {
   return match ? match[1] : null;
 }
 
+// Detect day from transcript text
+function detectDayFromText(text) {
+  const t = text.toLowerCase();
+  const todayIdx = TODAY_IDX;
+  if (t.includes("yesterday")) return Math.max(todayIdx - 1, 0);
+  if (t.includes("monday")) return 0;
+  if (t.includes("tuesday")) return 1;
+  if (t.includes("wednesday")) return 2;
+  if (t.includes("thursday")) return 3;
+  if (t.includes("friday")) return 4;
+  if (t.includes("today") || t.includes("this morning") || t.includes("this afternoon")) return todayIdx;
+  return null; // no day detected
+}
+
+// Detect entry type from transcript
+function detectTypeFromText(text) {
+  const t = text.toLowerCase();
+  const serviceKeywords = ["service", "serviced", "service call", "fsr", "treatment", "chemical", "dosing", "sampling", "disinfection", "legionella", "boiler", "cooling tower", "repair", "installed", "maintenance"];
+  const adminKeywords = ["admin", "administrative", "fsr completion", "paperwork", "report", "conference call", "meeting with team", "office"];
+  for (const k of serviceKeywords) if (t.includes(k)) return "service";
+  for (const k of adminKeywords) if (t.includes(k)) return "admin";
+  return "sales";
+}
+
 function useStateRef(initial) {
   const [state, setState] = useState(initial);
   const ref = useRef(initial);
-  const setStateRef = useCallback((val) => {
-    ref.current = val;
-    setState(val);
-  }, []);
-  return [state, ref, setStateRef];
+  const set = useCallback((val) => { ref.current = val; setState(val); }, []);
+  return [state, ref, set];
 }
 
 export default function App() {
@@ -48,22 +66,18 @@ export default function App() {
   const [entries, setEntries] = useState({ 0: [], 1: [], 2: [], 3: [], 4: [] });
   const [currentTranscript, setCurrentTranscript] = useState("");
   const [aiProcessed, setAiProcessed] = useState("");
+  const [aiSuggestedDay, setAiSuggestedDay] = useState(null);
+  const [aiSuggestedType, setAiSuggestedType] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState("");
+  const [syncLog, setSyncLog] = useState([]);
 
   const [isRecording, isRecordingRef, setIsRecording] = useStateRef(false);
   const recognitionRef = useRef(null);
 
-  const [qaAnswers, setQaAnswers] = useState({
-    renewals: "",
-    jeopardy: "",
-    tssSupport: "",
-    growth: "",
-    comments: "",
-  });
+  const [qaAnswers, setQaAnswers] = useState({ renewals: "", jeopardy: "", tssSupport: "", growth: "", comments: "" });
 
-  // Load Google Identity Services
   useEffect(() => {
     const script = document.createElement("script");
     script.src = "https://accounts.google.com/gsi/client";
@@ -73,10 +87,7 @@ export default function App() {
           client_id: GOOGLE_CLIENT_ID,
           scope: SCOPES,
           callback: (resp) => {
-            if (resp.access_token) {
-              setAccessToken(resp.access_token);
-              fetchUserInfo(resp.access_token);
-            }
+            if (resp.access_token) { setAccessToken(resp.access_token); fetchUserInfo(resp.access_token); }
             setAuthLoading(false);
           },
         });
@@ -88,36 +99,21 @@ export default function App() {
 
   async function fetchUserInfo(token) {
     try {
-      const res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", { headers: { Authorization: `Bearer ${token}` } });
       const data = await res.json();
       setUserEmail(data.email || "");
     } catch {}
   }
 
-  function handleSignIn() {
-    setAuthLoading(true);
-    tokenClient?.requestAccessToken();
-  }
-
+  function handleSignIn() { setAuthLoading(true); tokenClient?.requestAccessToken(); }
   function handleSignOut() {
-    if (accessToken && window.google) {
-      window.google.accounts.oauth2.revoke(accessToken);
-    }
-    setAccessToken(null);
-    setUserEmail("");
-    setSheetConnected(false);
-    setSpreadsheetId(null);
-    setSyncStatus("");
+    if (accessToken && window.google) window.google.accounts.oauth2.revoke(accessToken);
+    setAccessToken(null); setUserEmail(""); setSheetConnected(false); setSpreadsheetId(null); setSyncStatus("");
   }
 
   async function connectSheet() {
     const id = getSpreadsheetIdFromUrl(sheetUrl);
-    if (!id) {
-      setSyncStatus("⚠️ Invalid Google Sheets URL.");
-      return;
-    }
+    if (!id) { setSyncStatus("⚠️ Invalid Google Sheets URL."); return; }
     localStorage.setItem("gc_sheet_url", sheetUrl);
     try {
       const res = await fetch(
@@ -127,26 +123,17 @@ export default function App() {
       const data = await res.json();
       if (data.error) { setSyncStatus(`⚠️ ${data.error.message}`); return; }
       const tabs = data.sheets?.map((s) => s.properties.title) || [];
-      if (!tabs.includes(SPREADSHEET_TAB)) {
-        setSyncStatus(`⚠️ Tab "${SPREADSHEET_TAB}" not found. Tabs: ${tabs.join(", ")}`);
-        return;
-      }
-      setSpreadsheetId(id);
-      setSheetName(data.properties?.title || "");
-      setSheetConnected(true);
+      if (!tabs.includes(SPREADSHEET_TAB)) { setSyncStatus(`⚠️ Tab "${SPREADSHEET_TAB}" not found. Tabs: ${tabs.join(", ")}`); return; }
+      setSpreadsheetId(id); setSheetName(data.properties?.title || ""); setSheetConnected(true);
       setSyncStatus(`✅ Connected to "${data.properties?.title}"`);
-    } catch {
-      setSyncStatus("⚠️ Could not connect. Check the URL.");
-    }
+    } catch { setSyncStatus("⚠️ Could not connect. Check the URL."); }
   }
 
   function startRecording() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { setSyncStatus("⚠️ Voice not supported. Use Chrome (Android) or Safari (iOS)."); return; }
     const rec = new SR();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = "en-US";
+    rec.continuous = true; rec.interimResults = true; rec.lang = "en-US";
     let final = "";
     rec.onresult = (e) => {
       let interim = "";
@@ -156,30 +143,27 @@ export default function App() {
       }
       setCurrentTranscript(final + interim);
     };
-    rec.onerror = () => { setIsRecording(false); };
-    rec.onend = () => { setIsRecording(false); };
+    rec.onerror = () => setIsRecording(false);
+    rec.onend = () => setIsRecording(false);
     rec.start();
     recognitionRef.current = rec;
     setIsRecording(true);
   }
 
-  function stopRecording() {
-    recognitionRef.current?.stop();
-    setIsRecording(false);
-  }
-
-  function toggleRecording() {
-    isRecordingRef.current ? stopRecording() : startRecording();
-  }
+  function stopRecording() { recognitionRef.current?.stop(); setIsRecording(false); }
+  function toggleRecording() { isRecordingRef.current ? stopRecording() : startRecording(); }
 
   async function processWithAI() {
     if (!currentTranscript.trim()) return;
-    setIsProcessing(true);
-    setAiProcessed("");
+    setIsProcessing(true); setAiProcessed(""); setAiSuggestedDay(null); setAiSuggestedType(null);
+
+    // Detect day and type immediately from transcript
+    const detectedDay = detectDayFromText(currentTranscript);
+    const detectedType = detectTypeFromText(currentTranscript);
+    if (detectedDay !== null) setAiSuggestedDay(detectedDay);
+    if (detectedType) setAiSuggestedType(detectedType);
+
     try {
-      const typeLabel =
-        entryType === "sales" ? "New Business / Sales Activity" :
-        entryType === "service" ? "Service Call" : "Administrative";
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -188,27 +172,29 @@ export default function App() {
           max_tokens: 1000,
           messages: [{
             role: "user",
-            content: `Clean up this voice-dictated work log into a concise professional one-liner under 25 words. Preserve customer names, actions, and next steps. Remove filler words. Respond with ONLY the cleaned text.\n\nCategory: ${typeLabel}\nDay: ${DAYS[selectedDay]}\nRaw: "${currentTranscript}"`
+            content: `You are a field sales rep assistant for Garratt-Callahan water treatment. Clean up this voice-dictated work log into a concise professional one-liner under 25 words. Preserve customer names, actions taken, and next steps. Remove day references like "yesterday" or "today". Remove filler words. Respond with ONLY the cleaned text, nothing else.
+
+Raw dictation: "${currentTranscript}"`
           }],
         }),
       });
       const data = await res.json();
       setAiProcessed(data.content?.[0]?.text?.trim() || currentTranscript);
-    } catch {
-      setAiProcessed(currentTranscript);
-    }
+    } catch { setAiProcessed(currentTranscript); }
     setIsProcessing(false);
+  }
+
+  function acceptAISuggestions() {
+    if (aiSuggestedDay !== null) setSelectedDay(aiSuggestedDay);
+    if (aiSuggestedType) setEntryType(aiSuggestedType);
+    setAiSuggestedDay(null); setAiSuggestedType(null);
   }
 
   function addEntry() {
     const text = aiProcessed || currentTranscript;
     if (!text.trim()) return;
-    setEntries((prev) => ({
-      ...prev,
-      [selectedDay]: [...prev[selectedDay], { type: entryType, text, raw: currentTranscript }],
-    }));
-    setCurrentTranscript("");
-    setAiProcessed("");
+    setEntries((prev) => ({ ...prev, [selectedDay]: [...prev[selectedDay], { type: entryType, text, raw: currentTranscript }] }));
+    setCurrentTranscript(""); setAiProcessed(""); setAiSuggestedDay(null); setAiSuggestedType(null);
   }
 
   function removeEntry(dayIdx, idx) {
@@ -217,44 +203,73 @@ export default function App() {
 
   async function syncToSheet() {
     if (!spreadsheetId || !accessToken) return;
-    setIsSyncing(true);
-    setSyncStatus("Syncing to Google Sheets...");
+    setIsSyncing(true); setSyncStatus("Reading sheet structure..."); setSyncLog([]);
+
     try {
+      // Read the sheet to find row positions
       const readRes = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(SPREADSHEET_TAB)}!A1:M60`,
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(SPREADSHEET_TAB)}!A1:N60`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       const readData = await readRes.json();
-      const rows = readData.values || [];
+      if (readData.error) { setSyncStatus(`⚠️ Read error: ${readData.error.message}`); setIsSyncing(false); return; }
 
+      const rows = readData.values || [];
+      const log = [`📋 Sheet has ${rows.length} rows`];
+
+      // Find day rows
       const dayRowMap = {};
       rows.forEach((row, idx) => {
         const cell = (row[0] || "").trim().toLowerCase();
-        DAYS.forEach((d) => { if (cell.startsWith(d.toLowerCase())) dayRowMap[d] = idx + 1; });
+        DAYS.forEach((d) => { if (cell.startsWith(d.toLowerCase())) { dayRowMap[d] = idx + 1; log.push(`📍 Found ${d} at row ${idx + 1}`); } });
       });
 
       const batchData = [];
+
       DAYS.forEach((day, dayIdx) => {
         const dayEntries = entries[dayIdx];
         if (!dayEntries.length) return;
         const rowNum = dayRowMap[day];
-        if (!rowNum) return;
+        if (!rowNum) { log.push(`⚠️ Could not find row for ${day}`); return; }
+
         const salesLines = dayEntries.filter((e) => e.type === "sales" || e.type === "admin").map((e) => e.text);
         const serviceLines = dayEntries.filter((e) => e.type === "service").map((e) => e.text);
-        if (salesLines.length) batchData.push({ range: `${SPREADSHEET_TAB}!B${rowNum + 1}`, values: [[salesLines.join("; ")]] });
-        if (serviceLines.length) batchData.push({ range: `${SPREADSHEET_TAB}!E${rowNum + 1}`, values: [[serviceLines.join("; ")]] });
+
+        // Write sales to col B (offset +1 from day row)
+        if (salesLines.length) {
+          const range = `'${SPREADSHEET_TAB}'!B${rowNum + 1}`;
+          batchData.push({ range, values: [[salesLines.join("\n")]] });
+          log.push(`✍️ Writing sales to ${range}`);
+        }
+        // Write service to col E (offset +1 from day row)
+        if (serviceLines.length) {
+          const range = `'${SPREADSHEET_TAB}'!E${rowNum + 1}`;
+          batchData.push({ range, values: [[serviceLines.join("\n")]] });
+          log.push(`✍️ Writing service to ${range}`);
+        }
       });
 
-      const qaMap = { renewals: "renewed and up to date", jeopardy: "jeopardy", tssSupport: "TSS support", growth: "personal develpment", comments: "Other Comments" };
+      // Q&A rows
+      const qaMap = { renewals: "renewed and up to date", jeopardy: "jeopardy", tssSupport: "tss support", growth: "personal dev", comments: "other comments" };
       rows.forEach((row, idx) => {
         const cell = (row[0] || "").toLowerCase();
         Object.entries(qaMap).forEach(([key, kw]) => {
-          if (cell.includes(kw.toLowerCase()) && qaAnswers[key])
-            batchData.push({ range: `${SPREADSHEET_TAB}!B${idx + 2}`, values: [[qaAnswers[key]]] });
+          if (cell.includes(kw) && qaAnswers[key]) {
+            const range = `'${SPREADSHEET_TAB}'!B${idx + 2}`;
+            batchData.push({ range, values: [[qaAnswers[key]]] });
+            log.push(`✍️ Writing Q&A "${key}" to ${range}`);
+          }
         });
       });
 
-      if (!batchData.length) { setSyncStatus("⚠️ No entries to sync."); setIsSyncing(false); return; }
+      if (!batchData.length) {
+        setSyncStatus("⚠️ No matching rows found. Check sheet structure.");
+        setSyncLog(log);
+        setIsSyncing(false);
+        return;
+      }
+
+      setSyncStatus(`Writing ${batchData.length} updates...`);
 
       const writeRes = await fetch(
         `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
@@ -265,17 +280,26 @@ export default function App() {
         }
       );
       const writeData = await writeRes.json();
-      setSyncStatus(writeData.error ? `⚠️ ${writeData.error.message}` : `✅ Synced ${batchData.length} update(s) to Google Sheets!`);
-    } catch { setSyncStatus("⚠️ Sync failed. Check connection."); }
+      if (writeData.error) {
+        setSyncStatus(`⚠️ Write error: ${writeData.error.message}`);
+        log.push(`❌ Error: ${writeData.error.message}`);
+      } else {
+        setSyncStatus(`✅ Synced ${batchData.length} update(s) to Google Sheets!`);
+        log.push(`✅ Success! ${batchData.length} cells updated.`);
+      }
+      setSyncLog(log);
+    } catch (e) {
+      setSyncStatus(`⚠️ Sync failed: ${e.message}`);
+    }
     setIsSyncing(false);
   }
 
   const isLoggedIn = !!accessToken;
   const totalEntries = Object.values(entries).flat().length;
+  const hasSuggestions = aiSuggestedDay !== null || aiSuggestedType !== null;
 
   return (
     <div style={S.root}>
-      {/* Header */}
       <div style={S.header}>
         <div style={S.headerLeft}>
           <div style={S.logo}>GC</div>
@@ -299,35 +323,31 @@ export default function App() {
       </div>
 
       <div style={S.body}>
-        {/* Welcome / Sign In */}
         {!isLoggedIn && (
           <div style={S.card}>
             <div style={S.welcomeIcon}>🎙️</div>
             <div style={S.welcomeTitle}>Field Task Logger</div>
-            <div style={S.welcomeSub}>Sign in with your Google account to log tasks by voice and sync to your Weekly Report spreadsheet.</div>
+            <div style={S.welcomeSub}>Sign in with your Google account to log tasks by voice and sync to your Weekly Report.</div>
             <button style={S.primaryBtn} onClick={handleSignIn} disabled={authLoading}>
               {authLoading ? "Connecting..." : "Sign in with Google"}
             </button>
           </div>
         )}
 
-        {/* Connect Sheet */}
         {isLoggedIn && !sheetConnected && (
           <div style={S.card}>
             <div style={S.cardTitle}>📋 Connect Your Google Sheet</div>
-            <div style={S.cardSub}>Paste the full URL of your Weekly Report spreadsheet</div>
+            <div style={S.cardSub}>Paste the full URL of your Weekly Report Google Sheet</div>
             <input style={S.input} placeholder="https://docs.google.com/spreadsheets/d/..." value={sheetUrl} onChange={(e) => setSheetUrl(e.target.value)} />
             <button style={S.primaryBtn} onClick={connectSheet}>Connect Sheet</button>
             {syncStatus && <div style={S.statusMsg}>{syncStatus}</div>}
           </div>
         )}
 
-        {/* Main App */}
         {isLoggedIn && sheetConnected && (
           <>
             <div style={S.sheetBadge}>
-              <span>📊</span>
-              <span>{sheetName}</span>
+              <span>📊</span><span>{sheetName}</span>
               <span style={{ marginLeft: "auto", color: "#64748b", fontSize: 11 }}>Week of {getCurrentWeekOf()}</span>
             </div>
 
@@ -354,7 +374,7 @@ export default function App() {
               ))}
             </div>
 
-            {/* Recorder Card */}
+            {/* Recorder */}
             <div style={S.card}>
               <div style={S.cardTitle}>{DAYS[selectedDay]} — {entryType === "sales" ? "Sales / Business" : entryType === "service" ? "Service Call" : "Admin"}</div>
 
@@ -362,7 +382,6 @@ export default function App() {
                 <span style={{ fontSize: 24 }}>{isRecording ? "⏹" : "🎙️"}</span>
                 <span>{isRecording ? "Tap to Stop" : "Tap to Record"}</span>
               </button>
-
               {isRecording && <div style={S.listeningBadge}>● Listening...</div>}
 
               {currentTranscript && (
@@ -376,6 +395,18 @@ export default function App() {
                 <button style={S.aiBtn} onClick={processWithAI} disabled={isProcessing}>
                   {isProcessing ? "✨ Cleaning up..." : "✨ Clean Up with AI"}
                 </button>
+              )}
+
+              {/* AI Suggestions Banner */}
+              {hasSuggestions && (
+                <div style={S.suggestionBanner}>
+                  <div style={S.suggestionText}>
+                    🤖 AI detected:
+                    {aiSuggestedDay !== null && <span style={S.suggestionChip}>{DAYS[aiSuggestedDay]}</span>}
+                    {aiSuggestedType && <span style={S.suggestionChip}>{aiSuggestedType === "sales" ? "💼 Sales" : aiSuggestedType === "service" ? "🔧 Service" : "📁 Admin"}</span>}
+                  </div>
+                  <button style={S.suggestionBtn} onClick={acceptAISuggestions}>Apply</button>
+                </div>
               )}
 
               {aiProcessed && (
@@ -428,7 +459,16 @@ export default function App() {
             {/* Sync */}
             <div style={{ marginBottom: 24 }}>
               {syncStatus && <div style={S.statusMsg}>{syncStatus}</div>}
-              <button style={{ ...S.syncBtn, ...(isSyncing || !totalEntries ? S.syncBtnOff : {}) }} onClick={syncToSheet} disabled={isSyncing || !totalEntries}>
+              {syncLog.length > 0 && (
+                <div style={S.syncLogBox}>
+                  {syncLog.map((l, i) => <div key={i} style={{ fontSize: 11, color: "#64748b", marginBottom: 2 }}>{l}</div>)}
+                </div>
+              )}
+              <button
+                style={{ ...S.syncBtn, ...(isSyncing || !totalEntries ? S.syncBtnOff : {}) }}
+                onClick={syncToSheet}
+                disabled={isSyncing || !totalEntries}
+              >
                 {isSyncing ? "Syncing..." : `📤 Sync ${totalEntries} Entr${totalEntries === 1 ? "y" : "ies"} to Google Sheets`}
               </button>
             </div>
@@ -443,7 +483,7 @@ const S = {
   root: { fontFamily: "'DM Sans','Segoe UI',sans-serif", background: "#0f172a", minHeight: "100vh", color: "#e2e8f0", maxWidth: 480, margin: "0 auto" },
   header: { background: "#1e293b", padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #334155", position: "sticky", top: 0, zIndex: 10 },
   headerLeft: { display: "flex", alignItems: "center", gap: 10 },
-  logo: { background: "#2563eb", color: "#fff", fontWeight: 800, fontSize: 14, width: 36, height: 36, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", letterSpacing: 1 },
+  logo: { background: "#2563eb", color: "#fff", fontWeight: 800, fontSize: 14, width: 36, height: 36, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" },
   appTitle: { fontWeight: 700, fontSize: 15, color: "#f1f5f9" },
   appSub: { fontSize: 11, color: "#94a3b8" },
   userBadge: { display: "flex", alignItems: "center", gap: 8 },
@@ -472,6 +512,10 @@ const S = {
   transcriptBox: { background: "#0f172a", borderRadius: 8, padding: 12, marginBottom: 10, border: "1px solid #334155" },
   transcriptLabel: { fontSize: 10, color: "#64748b", fontWeight: 700, marginBottom: 4, textTransform: "uppercase" },
   aiBtn: { width: "100%", background: "#2d1b69", border: "1px solid #6d28d9", borderRadius: 8, padding: 10, color: "#c4b5fd", fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 10 },
+  suggestionBanner: { background: "#1e3a2a", border: "1px solid #22c55e", borderRadius: 8, padding: "10px 12px", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  suggestionText: { fontSize: 12, color: "#4ade80", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" },
+  suggestionChip: { background: "#065f46", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700, color: "#6ee7b7" },
+  suggestionBtn: { background: "#22c55e", color: "#0f172a", border: "none", borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 },
   aiBox: { background: "#0f172a", borderRadius: 8, padding: 12, marginBottom: 10, border: "1px solid #22c55e" },
   aiTextarea: { width: "100%", background: "transparent", border: "none", color: "#e2e8f0", fontSize: 13, resize: "none", outline: "none", lineHeight: 1.5, boxSizing: "border-box", fontFamily: "inherit" },
   addBtn: { width: "100%", background: "#065f46", border: "1px solid #10b981", borderRadius: 8, padding: 11, color: "#6ee7b7", fontSize: 14, fontWeight: 700, cursor: "pointer" },
@@ -483,4 +527,5 @@ const S = {
   syncBtn: { width: "100%", background: "#1d4ed8", border: "none", borderRadius: 12, padding: 16, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" },
   syncBtnOff: { background: "#334155", color: "#64748b", cursor: "not-allowed" },
   statusMsg: { fontSize: 13, color: "#94a3b8", marginBottom: 8, padding: "8px 12px", background: "#0f172a", borderRadius: 8 },
+  syncLogBox: { background: "#0f172a", borderRadius: 8, padding: "8px 12px", marginBottom: 8, border: "1px solid #1e293b" },
 };
