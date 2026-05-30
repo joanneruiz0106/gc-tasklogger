@@ -493,7 +493,7 @@ export default function App() {
               )}
 
               {(currentTranscript || aiProcessed) && (
-                <button style={S.addBtn} onClick={addEntry}>+ Add Entry</button>
+                <button style={S.addBtn} onClick={addEntry}>+ Add</button>
               )}
             </div>
 
