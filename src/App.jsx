@@ -151,15 +151,19 @@ export default function App() {
       }
       const t = full.trim();
       setCurrentTranscript(t);
-      // Auto-detect day and type immediately from transcript
+      // Auto-detect day and type immediately — apply both directly, no "Apply" tap needed
       const detDay = detectDayFromText(t);
       const detType = detectTypeFromText(t);
       if (detDay !== null) {
-        setAiSuggestedDay(detDay);
         confirmedDayRef.current = detDay;
         setSelectedDay(detDay);
       }
-      if (detType) setAiSuggestedType(detType);
+      if (detType) {
+        setEntryType(detType); // apply type directly
+      }
+      // Clear suggestions since we auto-applied them
+      setAiSuggestedDay(null);
+      setAiSuggestedType(null);
     };
     rec.onerror = (e) => {
       console.log("Speech error:", e.error);
@@ -182,27 +186,13 @@ export default function App() {
     if (detectedDay !== null) setAiSuggestedDay(detectedDay);
     setAiSuggestedType(detectedType);
     try {
-      // Deduplicate repeated phrases before sending to AI
-      const words = currentTranscript.split(" ");
-      const deduped = [];
-      const seen = new Set();
-      // Use sliding 6-word window dedup to catch looping
-      for (let i = 0; i < words.length; i++) {
-        const chunk = words.slice(i, i + 6).join(" ").toLowerCase();
-        if (!seen.has(chunk)) {
-          deduped.push(words[i]);
-          seen.add(chunk);
-        }
-      }
-      const cleanedInput = deduped.join(" ").slice(0, 500); // cap at 500 chars
-
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
-          messages: [{ role: "user", content: `You are a field sales assistant for Garratt-Callahan water treatment. The text below is a voice-dictated work log that may contain repeated or garbled phrases due to voice recognition. Extract the unique meaningful content and rewrite it as a single clean professional sentence under 25 words. Preserve customer names, actions taken, and next steps. Remove all repetition, filler words, and day references. Respond with ONLY the cleaned sentence.\n\nRaw dictation: "${cleanedInput}"` }],
+          messages: [{ role: "user", content: `You are a field sales assistant for Garratt-Callahan water treatment. Clean up this voice-dictated work log entry into ONE professional sentence under 20 words. Rules: (1) Remove words like "yesterday", "today", "I did", "I called", filler words (2) Start with the action or customer name (3) Preserve customer names, specific actions, and next steps (4) Respond with ONLY the final sentence, nothing else.\n\nExamples:\n"yesterday I did service call on Omni Hospital" → "Serviced Omni Hospital."\n"today I called Jensen Foods Juan Carlos to get water use log" → "Called Jensen Foods; Juan Carlos to provide water use log."\n"I met with Heritage bag to review the scale process" → "Met with Heritage Bag to review descale process."\n\nNow clean this: "${currentTranscript}"` }],
         }),
       });
       const data = await res.json();
