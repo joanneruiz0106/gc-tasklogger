@@ -155,13 +155,14 @@ export default function App() {
       const detDay = detectDayFromText(t);
       const detType = detectTypeFromText(t);
       if (detDay !== null) {
-        confirmedDayRef.current = detDay;
-        setSelectedDay(detDay);
+        confirmedDayRef.current = detDay; // set ref FIRST
+        setSelectedDay(detDay);           // then update UI
+      } else {
+        confirmedDayRef.current = TODAY_IDX; // default to today
       }
       if (detType) {
-        setEntryType(detType); // apply type directly
+        setEntryType(detType);
       }
-      // Clear suggestions since we auto-applied them
       setAiSuggestedDay(null);
       setAiSuggestedType(null);
     };
@@ -216,12 +217,16 @@ export default function App() {
   function addEntry() {
     const text = aiProcessed || currentTranscript;
     if (!text.trim()) return;
-    // Use confirmedDayRef to avoid React async state timing issues
+    // Read directly from selectedDay state — it's already been set by auto-detect
+    // We also snapshot it here to be safe
     const targetDay = confirmedDayRef.current;
-    setEntries((prev) => ({ ...prev, [targetDay]: [...prev[targetDay], { type: entryType, text }] }));
-    setCurrentTranscript(""); setAiProcessed(""); setAiSuggestedDay(null); setAiSuggestedType(null);
-    // Reset confirmed day to current selected day for next entry
-    confirmedDayRef.current = selectedDay;
+    console.log("addEntry: targetDay=", targetDay, DAYS[targetDay], "type=", entryType);
+    setEntries((prev) => {
+      const updated = { ...prev };
+      updated[targetDay] = [...(updated[targetDay] || []), { type: entryType, text, day: targetDay }];
+      return updated;
+    });
+    setCurrentTranscript(""); setAiProcessed("");
   }
 
   function removeEntry(dayIdx, idx) {
@@ -488,7 +493,7 @@ export default function App() {
               )}
 
               {(currentTranscript || aiProcessed) && (
-                <button style={S.addBtn} onClick={addEntry}>+ Add to {DAYS[selectedDay]}</button>
+                <button style={S.addBtn} onClick={addEntry}>+ Add Entry</button>
               )}
             </div>
 
