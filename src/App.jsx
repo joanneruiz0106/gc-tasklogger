@@ -149,15 +149,23 @@ export default function App() {
       for (let i = 0; i < e.results.length; i++) {
         full += e.results[i][0].transcript + " ";
       }
-      setCurrentTranscript(full.trim());
+      const t = full.trim();
+      setCurrentTranscript(t);
+      // Auto-detect day and type immediately from transcript
+      const detDay = detectDayFromText(t);
+      const detType = detectTypeFromText(t);
+      if (detDay !== null) {
+        setAiSuggestedDay(detDay);
+        confirmedDayRef.current = detDay;
+        setSelectedDay(detDay);
+      }
+      if (detType) setAiSuggestedType(detType);
     };
     rec.onerror = (e) => {
       console.log("Speech error:", e.error);
       setIsRecording(false);
     };
-    rec.onend = () => {
-      setIsRecording(false);
-    };
+    rec.onend = () => { setIsRecording(false); };
     rec.start();
     recognitionRef.current = rec;
     setIsRecording(true);
