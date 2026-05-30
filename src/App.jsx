@@ -203,8 +203,14 @@ export default function App() {
     setIsProcessing(false);
   }
 
+  // Use a ref to hold the confirmed day so addEntry always gets the right value
+  const confirmedDayRef = useRef(TODAY_IDX);
+
   function acceptAISuggestions() {
-    if (aiSuggestedDay !== null) setSelectedDay(aiSuggestedDay);
+    if (aiSuggestedDay !== null) {
+      setSelectedDay(aiSuggestedDay);
+      confirmedDayRef.current = aiSuggestedDay;
+    }
     if (aiSuggestedType) setEntryType(aiSuggestedType);
     setAiSuggestedDay(null); setAiSuggestedType(null);
   }
@@ -212,8 +218,12 @@ export default function App() {
   function addEntry() {
     const text = aiProcessed || currentTranscript;
     if (!text.trim()) return;
-    setEntries((prev) => ({ ...prev, [selectedDay]: [...prev[selectedDay], { type: entryType, text }] }));
+    // Use confirmedDayRef to avoid React async state timing issues
+    const targetDay = confirmedDayRef.current;
+    setEntries((prev) => ({ ...prev, [targetDay]: [...prev[targetDay], { type: entryType, text }] }));
     setCurrentTranscript(""); setAiProcessed(""); setAiSuggestedDay(null); setAiSuggestedType(null);
+    // Reset confirmed day to current selected day for next entry
+    confirmedDayRef.current = selectedDay;
   }
 
   function removeEntry(dayIdx, idx) {
@@ -424,7 +434,7 @@ export default function App() {
 
             <div style={S.dayRow}>
               {DAYS.map((d, i) => (
-                <button key={d} style={{ ...S.dayBtn, ...(selectedDay === i ? S.dayBtnActive : {}) }} onClick={() => setSelectedDay(i)}>
+                <button key={d} style={{ ...S.dayBtn, ...(selectedDay === i ? S.dayBtnActive : {}) }} onClick={() => { setSelectedDay(i); confirmedDayRef.current = i; }}>
                   <span style={{ fontSize: 12, fontWeight: 700 }}>{d.slice(0, 3)}</span>
                   {entries[i].length > 0 && <span style={S.dayCount}>{entries[i].length}</span>}
                 </button>
