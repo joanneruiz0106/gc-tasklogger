@@ -1,3 +1,4 @@
+// GC Task Logger v3.1 - 20260601-2350
 import { useState, useRef, useEffect, useCallback } from "react";
 
 const SPREADSHEET_TAB = "Friday Report";
