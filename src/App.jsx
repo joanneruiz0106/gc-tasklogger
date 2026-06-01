@@ -271,8 +271,6 @@ export default function App() {
     setSyncLog(log); setIsSyncing(false);
   }
 
-  const [isFinalizing, setIsFinalizing] = useState(false);
-  const [finalizeStatus, setFinalizeStatus] = useState("");
   const totalEntries = Object.values(entries).flat().length;
   async function finalizeSheet() {
     if (!spreadsheetId) return;
@@ -485,14 +483,6 @@ export default function App() {
           <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8, textAlign: "center" }}>
             Ready to submit? Finalize copies the report and clears the template.
           </div>
-          {finalizeStatus && <div style={S.statusMsg}>{finalizeStatus}</div>}
-          <button
-            style={{ ...S.finalizeBtn, ...(isFinalizing ? S.syncBtnOff : {}) }}
-            onClick={finalizeSheet}
-            disabled={isFinalizing}
-          >
-            {isFinalizing ? "Finalizing..." : "🏁 Finalize & Submit Report"}
-          </button>
         </div>
       </div>
     </div>
