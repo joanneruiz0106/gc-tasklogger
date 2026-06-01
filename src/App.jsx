@@ -39,11 +39,12 @@ function detectDayFromText(text) {
 function detectTypeFromText(text) {
   const t = text.toLowerCase();
   const dmKw = ["district manager", "corporate support", "dm request", "support request", "dm support", "manager support"];
-  const serviceKw = ["service call", "serviced", "fsr", "field service", "treatment", "chemical feed", "dosing", "sampling", "disinfection", "legionella", "boiler", "cooling tower", "repair", "installed equipment", "maintenance"];
-  const adminKw = ["admin", "administrative", "fsr completion", "paperwork", "conference call", "meeting with team"];
+  // Admin checked FIRST — must not fall into service even if service words appear
+  const adminKw = ["admin", "administrative", "fsr completion", "paperwork", "conference call", "meeting with team", "office work", "desk work"];
+  const serviceKw = ["service call", "serviced", "field service", "treatment", "chemical feed", "dosing", "sampling", "disinfection", "legionella", "boiler", "cooling tower", "repair", "installed equipment", "maintenance"];
   for (const k of dmKw) if (t.includes(k)) return "dm";
+  for (const k of adminKw) if (t.includes(k)) return "admin"; // admin before service
   for (const k of serviceKw) if (t.includes(k)) return "service";
-  for (const k of adminKw) if (t.includes(k)) return "admin";
   return "sales";
 }
 
@@ -75,6 +76,8 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState("");
   const [syncLog, setSyncLog] = useState([]);
   const [showLog, setShowLog] = useState(false);
+  const [isFinalizing, setIsFinalizing] = useState(false);
+  const [finalizeStatus, setFinalizeStatus] = useState("");
 
   const [isRecording, isRecordingRef, setIsRecording] = useStateRef(false);
   const recognitionRef = useRef(null);
@@ -107,13 +110,18 @@ export default function App() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { setSyncStatus("⚠️ Voice not supported. Use Chrome (Android) or Safari (iOS)."); return; }
     const rec = new SR();
-    rec.continuous = false;
+    rec.continuous = true;  // keep mic open so low voice / unstable phone doesn't stop early
     rec.interimResults = true;
     rec.lang = "en-US";
+    rec.maxAlternatives = 1;
+    let accumulated = "";
     rec.onresult = (e) => {
-      let full = "";
-      for (let i = 0; i < e.results.length; i++) full += e.results[i][0].transcript + " ";
-      const t = full.trim();
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) accumulated += e.results[i][0].transcript + " ";
+        else interim = e.results[i][0].transcript;
+      }
+      const t = (accumulated + interim).trim();
       setCurrentTranscript(t);
       const detDay = detectDayFromText(t);
       const detType = detectTypeFromText(t);
@@ -141,7 +149,7 @@ export default function App() {
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
-          messages: [{ role: "user", content: `You are a field sales assistant for Garratt-Callahan water treatment. Clean up this voice-dictated work log entry into ONE professional sentence under 20 words. Rules: (1) Remove words like "yesterday", "today", "I did", "I called", filler words (2) Start with the action or customer name (3) Preserve customer names, specific actions, and next steps (4) Respond with ONLY the final sentence, nothing else.\n\nExamples:\n"yesterday I did service call on Omni Hospital" → "Serviced Omni Hospital."\n"today I called Jensen Foods Juan Carlos to get water use log" → "Called Jensen Foods; Juan Carlos to provide water use log."\n"I met with Heritage bag to review the scale process" → "Met with Heritage Bag to review descale process."\n\nNow clean this: "${currentTranscript}"` }],
+          messages: [{ role: "user", content: `You are a field sales assistant for Garratt-Callahan water treatment. Clean up this voice-dictated work log entry into ONE professional sentence under 20 words. Rules: (1) Remove ALL day/time references: "yesterday", "today", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "this morning", "this afternoon" (2) Remove filler: "I did", "I called", "I went", "I did some", "such as", "etc" (3) Start with the action verb or customer name (4) Preserve customer names, specific actions, next steps (5) Respond with ONLY the final sentence, nothing else.\n\nExamples:\n"yesterday I did service call on Omni Hospital" → "Serviced Omni Hospital."\n"today I called Jensen Foods Juan Carlos to get water use log" → "Called Jensen Foods; Juan Carlos to provide water use log."\n"Thursday I did administrative work FSR completion" → "Completed FSRs; administrative work."\n"I met with Heritage bag to review the scale process" → "Met with Heritage Bag; reviewed descale process."\n\nNow clean this: "${currentTranscript}"` }],
         }),
       });
       const data = await res.json();
@@ -160,6 +168,28 @@ export default function App() {
 
   function removeEntry(dayIdx, idx) {
     setEntries((prev) => ({ ...prev, [dayIdx]: prev[dayIdx].filter((_, i) => i !== idx) }));
+  }
+
+  async function finalizeWeek() {
+    if (!spreadsheetId) return;
+    setIsFinalizing(true);
+    setFinalizeStatus("Finalizing weekly report...");
+    try {
+      const res = await fetch("/api/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "finalize", spreadsheetId, tab: SPREADSHEET_TAB }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setFinalizeStatus(`⚠️ ${data.error}`);
+      } else {
+        setFinalizeStatus(`✅ Report saved as "${data.copyName}". Template cleared for next week.`);
+      }
+    } catch (e) {
+      setFinalizeStatus(`⚠️ ${e.message}`);
+    }
+    setIsFinalizing(false);
   }
 
   async function syncToSheet() {
@@ -241,7 +271,27 @@ export default function App() {
     setSyncLog(log); setIsSyncing(false);
   }
 
+  const [isFinalizing, setIsFinalizing] = useState(false);
+  const [finalizeStatus, setFinalizeStatus] = useState("");
   const totalEntries = Object.values(entries).flat().length;
+  async function finalizeSheet() {
+    if (!spreadsheetId) return;
+    const confirmed = window.confirm("Finalize this week's report?\n\nThis will:\n• Copy the sheet as a new dated file\n• Clear the original template for next week");
+    if (!confirmed) return;
+    setIsFinalizing(true); setFinalizeStatus("Finalizing...");
+    try {
+      const res = await fetch("/api/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "finalize", spreadsheetId }),
+      });
+      const data = await res.json();
+      if (data.error) { setFinalizeStatus(`⚠️ ${data.error}`); }
+      else { setFinalizeStatus(`✅ Saved as "${data.fileName}". Template cleared for next week.`); }
+    } catch (e) { setFinalizeStatus(`⚠️ ${e.message}`); }
+    setIsFinalizing(false);
+  }
+
   const TYPE_CONFIG = [
     { id: "sales", label: "💼 Sales / Biz Dev", col: "#1a6b3c" },
     { id: "service", label: "🔧 Service Call", col: "#1a4b8a" },
@@ -304,7 +354,10 @@ export default function App() {
           <div style={S.logo}>GC</div>
           <div><div style={S.appTitle}>Field Task Logger</div><div style={S.appSub}>Garratt-Callahan · {userName}</div></div>
         </div>
-        <button style={S.signOutBtn} onClick={() => { localStorage.removeItem("gc_user_name"); localStorage.removeItem("gc_sheet_url"); localStorage.removeItem("gc_sheet_name"); setNameSet(false); setSheetConnected(false); }}>Reset</button>
+        <div style={{display:"flex",gap:6}}>
+          <button style={S.signOutBtn} onClick={() => { localStorage.removeItem("gc_sheet_url"); localStorage.removeItem("gc_sheet_name"); setSheetConnected(false); setSpreadsheetId(null); setSheetUrl(""); setSyncStatus(""); }}>📋 Change Sheet</button>
+          <button style={S.signOutBtn} onClick={() => { localStorage.clear(); setNameSet(false); setSheetConnected(false); setSpreadsheetId(null); setSheetUrl(""); setUserName(""); }}>Reset</button>
+        </div>
       </div>
 
       <div style={S.body}>
@@ -415,6 +468,31 @@ export default function App() {
           <button style={{ ...S.syncBtn, ...(isSyncing || !totalEntries ? S.syncBtnOff : {}) }} onClick={syncToSheet} disabled={isSyncing || !totalEntries}>
             {isSyncing ? "Syncing..." : `📤 Sync ${totalEntries} Entr${totalEntries === 1 ? "y" : "ies"} to Google Sheets`}
           </button>
+
+          <div style={S.divider} />
+          <div style={S.finalizeSection}>
+            <div style={S.finalizeTitle}>🏁 End of Week</div>
+            <div style={S.finalizeSub}>Saves a copy of this week's report, clears the template, and updates the date for next week.</div>
+            {finalizeStatus && <div style={{...S.statusMsg, marginBottom: 8}}>{finalizeStatus}</div>}
+            <button style={{ ...S.finalizeBtn, ...(isFinalizing ? S.syncBtnOff : {}) }} onClick={finalizeWeek} disabled={isFinalizing}>
+              {isFinalizing ? "Finalizing..." : "🏁 Finalize & Archive This Week"}
+            </button>
+          </div>
+        </div>
+
+        {/* Finalize Button */}
+        <div style={S.finalizeSection}>
+          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8, textAlign: "center" }}>
+            Ready to submit? Finalize copies the report and clears the template.
+          </div>
+          {finalizeStatus && <div style={S.statusMsg}>{finalizeStatus}</div>}
+          <button
+            style={{ ...S.finalizeBtn, ...(isFinalizing ? S.syncBtnOff : {}) }}
+            onClick={finalizeSheet}
+            disabled={isFinalizing}
+          >
+            {isFinalizing ? "Finalizing..." : "🏁 Finalize & Submit Report"}
+          </button>
         </div>
       </div>
     </div>
@@ -464,4 +542,6 @@ const S = {
   statusMsg: { fontSize: 13, color: "#94a3b8", marginBottom: 8, padding: "8px 12px", background: "#0f172a", borderRadius: 8 },
   logToggle: { background: "transparent", border: "1px solid #334155", borderRadius: 6, padding: "4px 10px", color: "#64748b", fontSize: 11, cursor: "pointer", marginBottom: 4, width: "100%" },
   syncLogBox: { background: "#0f172a", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e293b", maxHeight: 200, overflowY: "auto" },
+  finalizeSection: { background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 24, border: "1px dashed #334155" },
+  finalizeBtn: { width: "100%", background: "#7c3aed", border: "none", borderRadius: 12, padding: 16, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" },
 };
