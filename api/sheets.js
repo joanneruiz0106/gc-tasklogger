@@ -1,8 +1,8 @@
 const { google } = require("googleapis");
- 
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
- 
+
   try {
     const serviceAccountJson = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
     const auth = new google.auth.GoogleAuth({
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     const sheets = google.sheets({ version: "v4", auth });
     const drive = google.drive({ version: "v3", auth });
     const { action, spreadsheetId, range, data, tab } = req.body;
- 
+
     // READ
     if (action === "read") {
       const response = await sheets.spreadsheets.values.get({ spreadsheetId, range });
@@ -25,7 +25,7 @@ export default async function handler(req, res) {
         sheetName: meta.data.properties?.title || "GC Weekly Report",
       });
     }
- 
+
     // WRITE
     if (action === "write") {
       const response = await sheets.spreadsheets.values.batchUpdate({
@@ -34,11 +34,11 @@ export default async function handler(req, res) {
       });
       return res.json({ updatedCells: response.data.totalUpdatedCells });
     }
- 
+
     // FINALIZE — copy file, rename with date, clear template, update week date
     if (action === "finalize") {
       const SPREADSHEET_TAB = tab || "Friday Report";
- 
+
       // 1. Read current sheet to find "Week of" date
       const readRes = await sheets.spreadsheets.values.get({
         spreadsheetId,
@@ -59,21 +59,21 @@ export default async function handler(req, res) {
           weekOf = row[1].toString().replace(/\//g, "-").trim();
         }
       });
- 
+
       if (!weekOf) weekOf = new Date().toISOString().slice(0, 10);
- 
+
       // 2. Copy the file
       const copyRes = await drive.files.copy({
         fileId: spreadsheetId,
         requestBody: { name: `GC Weekly Report - Week of ${weekOf}` },
       });
       const copyName = `GC Weekly Report - Week of ${weekOf}`;
- 
+
       // 3. Get sheet metadata to find data rows to clear
       const metaRes = await sheets.spreadsheets.get({ spreadsheetId });
       const sheetObj = metaRes.data.sheets?.find(s => s.properties.title === SPREADSHEET_TAB);
       if (!sheetObj) return res.status(400).json({ error: `Tab "${SPREADSHEET_TAB}" not found` });
- 
+
       // 4. Clear data rows — read all rows, find day blocks, clear cols B, E, M
       const allRows = await sheets.spreadsheets.values.get({
         spreadsheetId,
@@ -82,7 +82,7 @@ export default async function handler(req, res) {
       const allData = allRows.data.values || [];
       const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
       const clearRanges = [];
- 
+
       allData.forEach((row, idx) => {
         const cell = (row[0] || "").trim().toLowerCase();
         const isDay = DAYS.some(d => cell === d.toLowerCase() || cell.startsWith(d.toLowerCase() + " "));
@@ -95,21 +95,21 @@ export default async function handler(req, res) {
           }
         }
       });
- 
+
       if (clearRanges.length) {
         await sheets.spreadsheets.values.batchClear({
           spreadsheetId,
           requestBody: { ranges: clearRanges },
         });
       }
- 
+
       // 5. Update "Week of" to next Monday
       const nextMonday = new Date();
       const dayOfWeek = nextMonday.getDay();
       const daysUntilMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
       nextMonday.setDate(nextMonday.getDate() + daysUntilMonday);
       const nextWeekStr = `${nextMonday.getMonth() + 1}/${nextMonday.getDate()}/${nextMonday.getFullYear()}`;
- 
+
       // Find and update the Week of cell
       let weekOfRow = -1, weekOfCol = -1;
       allData.forEach((row, ri) => {
@@ -119,7 +119,7 @@ export default async function handler(req, res) {
           }
         });
       });
- 
+
       if (weekOfRow >= 0) {
         // Update adjacent cell (col + 1) with new date
         const colLetter = String.fromCharCode(65 + weekOfCol + 1);
@@ -130,14 +130,13 @@ export default async function handler(req, res) {
           requestBody: { values: [[nextWeekStr]] },
         });
       }
- 
+
       return res.json({ copyName, weekOf, nextWeek: nextWeekStr });
     }
- 
+
     return res.status(400).json({ error: "Unknown action" });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: e.message });
   }
 }
- 
