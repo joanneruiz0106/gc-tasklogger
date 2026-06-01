@@ -478,13 +478,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Finalize Button */}
-        <div style={S.finalizeSection}>
-          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8, textAlign: "center" }}>
-            Ready to submit? Finalize copies the report and clears the template.
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
