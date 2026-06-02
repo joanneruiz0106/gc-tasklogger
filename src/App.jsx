@@ -86,6 +86,9 @@ export default function App() {
   const confirmedDayRef = useRef(TODAY_IDX);
 
   const [qaAnswers, setQaAnswers] = useState({ renewals: "", jeopardy: "", tssSupport: "", growth: "", comments: "" });
+  const [qaRecording, setQaRecording] = useState(null); // which Q&A key is recording
+  const qaMediaRecorderRef = useRef(null);
+  const qaAudioChunksRef = useRef([]);
 
   async function connectSheet() {
     const id = getSpreadsheetIdFromUrl(sheetUrl);
@@ -231,6 +234,46 @@ Now process: "${precleaned}"` }],
       return updated;
     });
     setCurrentTranscript(""); setAiProcessed("");
+  }
+
+  async function startQARecording(key) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
+      const rec = new MediaRecorder(stream, { mimeType });
+      qaAudioChunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size > 0) qaAudioChunksRef.current.push(e.data); };
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        setQaRecording(null);
+        const blob = new Blob(qaAudioChunksRef.current, { type: mimeType });
+        try {
+          const formData = new FormData();
+          formData.append("file", blob, "qa." + (mimeType.includes("mp4") ? "mp4" : "webm"));
+          formData.append("model", "whisper-1");
+          formData.append("language", "en");
+          const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}` },
+            body: formData,
+          });
+          const data = await res.json();
+          if (data.text) {
+            setQaAnswers(p => ({ ...p, [key]: (p[key] ? p[key] + " " : "") + data.text.trim() }));
+          }
+        } catch(e) { console.error("QA transcription error:", e); }
+      };
+      rec.start();
+      qaMediaRecorderRef.current = rec;
+      setQaRecording(key);
+    } catch(e) { setSyncStatus("⚠️ Mic access denied"); }
+  }
+
+  function stopQARecording() {
+    if (qaMediaRecorderRef.current?.state !== "inactive") {
+      qaMediaRecorderRef.current.stop();
+    }
+    setQaRecording(null);
   }
 
   function removeEntry(dayIdx, idx) {
@@ -509,7 +552,16 @@ Now process: "${precleaned}"` }],
           ].map(({ key, label }) => (
             <div key={key} style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 4, fontWeight: 600 }}>{label}</div>
-              <textarea style={S.qaInput} value={qaAnswers[key]} onChange={(e) => setQaAnswers((p) => ({ ...p, [key]: e.target.value }))} placeholder="Type your answer..." rows={2}></textarea>
+              <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
+                <textarea style={{ ...S.qaInput, flex: 1 }} value={qaAnswers[key]} onChange={(e) => setQaAnswers((p) => ({ ...p, [key]: e.target.value }))} placeholder="Type or tap 🎙️ to dictate..." rows={2}></textarea>
+                <button
+                  style={{ ...S.qaMicBtn, ...(qaRecording === key ? S.qaMicBtnActive : {}) }}
+                  onClick={() => qaRecording === key ? stopQARecording() : startQARecording(key)}
+                >
+                  {qaRecording === key ? "⏹" : "🎙️"}
+                </button>
+              </div>
+              {qaRecording === key && <div style={{ fontSize: 10, color: "#f87171", marginTop: 3 }}>● Recording... tap ⏹ to stop</div>}
             </div>
           ))}
         </div>
@@ -594,4 +646,6 @@ const S = {
   syncLogBox: { background: "#0f172a", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e293b", maxHeight: 200, overflowY: "auto" },
   finalizeSection: { background: "#1e293b", borderRadius: 14, padding: 16, marginBottom: 24, border: "1px dashed #334155" },
   finalizeBtn: { width: "100%", background: "#7c3aed", border: "none", borderRadius: 12, padding: 16, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" },
+  qaMicBtn: { background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: "8px 10px", fontSize: 16, cursor: "pointer", flexShrink: 0, color: "#94a3b8" },
+  qaMicBtnActive: { background: "#4a1a1a", border: "1px solid #ef4444", color: "#f87171" },
 };
