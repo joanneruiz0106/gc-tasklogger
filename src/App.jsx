@@ -42,7 +42,7 @@ function detectTypeFromText(text) {
   const dmKw = ["district manager", "corporate support", "dm request", "support request", "dm support", "manager support"];
   // Admin checked FIRST — must not fall into service even if service words appear
   const adminKw = ["admin", "administrative", "fsr completion", "paperwork", "conference call", "meeting with team", "office work", "desk work"];
-  const serviceKw = ["service call", "serviced", "field service", "treatment", "chemical feed", "dosing", "sampling", "disinfection", "legionella", "boiler", "cooling tower", "repair", "installed equipment", "maintenance"];
+  const serviceKw = ["service call", "serviced", "service for", "field service", "treatment", "chemical feed", "dosing", "sampling", "disinfection", "legionella", "boiler", "cooling tower", "repair", "installed equipment", "maintenance", "did a service", "did service"];
   for (const k of dmKw) if (t.includes(k)) return "dm";
   for (const k of adminKw) if (t.includes(k)) return "admin"; // admin before service
   for (const k of serviceKw) if (t.includes(k)) return "service";
@@ -391,7 +391,7 @@ export default function App() {
         </div>
         <div style={{display:"flex",gap:6}}>
           <button style={S.signOutBtn} onClick={() => { localStorage.removeItem("gc_sheet_url"); localStorage.removeItem("gc_sheet_name"); setSheetConnected(false); setSpreadsheetId(null); setSheetUrl(""); setSyncStatus(""); }}>📋 Change Sheet</button>
-          <button style={S.signOutBtn} onClick={() => { localStorage.clear(); setNameSet(false); setSheetConnected(false); setSpreadsheetId(null); setSheetUrl(""); setUserName(""); }}>Reset</button>
+          <button style={S.signOutBtn} onClick={() => { localStorage.removeItem("gc_user_name"); setNameSet(false); setUserName(""); }}>Reset</button>
         </div>
       </div>
 
