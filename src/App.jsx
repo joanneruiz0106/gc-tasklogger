@@ -211,7 +211,6 @@ Now process: "${precleaned}"` }],
     } catch { setAiProcessed(precleaned.charAt(0).toUpperCase() + precleaned.slice(1)); }
     setIsProcessing(false);
   }
-  }
 
 
   function addEntry() {
