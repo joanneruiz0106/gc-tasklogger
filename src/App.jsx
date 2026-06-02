@@ -107,14 +107,16 @@ export default function App() {
     } catch (e) { setSyncStatus(`⚠️ ${e.message}`); }
   }
 
+  const recordingTimeoutRef = useRef(null);
+
   function startRecording() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { setSyncStatus("⚠️ Voice not supported. Use Chrome (Android) or Safari (iOS)."); return; }
+    setCurrentTranscript(""); setAiProcessed("");
     const rec = new SR();
-    rec.continuous = true;  // keep mic open so low voice / unstable phone doesn't stop early
+    rec.continuous = true;
     rec.interimResults = true;
     rec.lang = "en-US";
-    rec.maxAlternatives = 1;
     let accumulated = "";
     rec.onresult = (e) => {
       let interim = "";
@@ -129,15 +131,24 @@ export default function App() {
       if (detDay !== null) { confirmedDayRef.current = detDay; setSelectedDay(detDay); }
       else { confirmedDayRef.current = TODAY_IDX; }
       if (detType) setEntryType(detType);
+      // Auto-stop 2.5s after last speech (silence detection)
+      if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
+      recordingTimeoutRef.current = setTimeout(() => { try { rec.stop(); } catch(e) {} }, 2500);
     };
-    rec.onerror = () => setIsRecording(false);
-    rec.onend = () => setIsRecording(false);
+    rec.onerror = (e) => { if (e.error !== "no-speech") setIsRecording(false); };
+    rec.onend = () => { if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current); setIsRecording(false); };
     rec.start();
     recognitionRef.current = rec;
     setIsRecording(true);
+    // Hard stop at 90 seconds
+    recordingTimeoutRef.current = setTimeout(() => { try { rec.stop(); } catch(e) {} }, 90000);
   }
 
-  function stopRecording() { recognitionRef.current?.stop(); setIsRecording(false); }
+  function stopRecording() {
+    if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
+    recognitionRef.current?.stop();
+    setIsRecording(false);
+  }
   function toggleRecording() { isRecordingRef.current ? stopRecording() : startRecording(); }
 
   async function processWithAI() {
