@@ -80,6 +80,7 @@ export default function App() {
   const [showLog, setShowLog] = useState(false);
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [finalizeStatus, setFinalizeStatus] = useState("");
+  const [exportUrl, setExportUrl] = useState("");
 
   const [isRecording, isRecordingRef, setIsRecording] = useStateRef(false);
   const recognitionRef = useRef(null);
@@ -294,7 +295,8 @@ Now process: "${precleaned}"` }],
       if (data.error) {
         setFinalizeStatus(`⚠️ ${data.error}`);
       } else {
-        setFinalizeStatus(`✅ Report saved as "${data.copyName}". Template cleared for next week.`);
+        setFinalizeStatus(`✅ Done! Template cleared for week of ${data.nextWeek}.`);
+        if (data.exportUrl) setExportUrl(data.exportUrl);
       }
     } catch (e) {
       setFinalizeStatus(`⚠️ ${e.message}`);
@@ -611,7 +613,12 @@ Now process: "${precleaned}"` }],
             <div style={S.finalizeTitle}>🏁 End of Week</div>
             <div style={S.finalizeSub}>Saves a copy of this week&apos;s report, clears the template, and updates the date for next week.</div>
             {finalizeStatus && <div style={{...S.statusMsg, marginBottom: 8}}>{finalizeStatus}</div>}
-            <button style={{ ...S.finalizeBtn, ...(isFinalizing ? S.syncBtnOff : {}) }} onClick={finalizeWeek} disabled={isFinalizing}>
+            {exportUrl && (
+              <a href={exportUrl} download style={S.downloadBtn}>
+                📥 Download Weekly Report (.xlsx)
+              </a>
+            )}
+            <button style={{ ...S.finalizeBtn, ...(isFinalizing ? S.syncBtnOff : {}), marginTop: 8 }} onClick={finalizeWeek} disabled={isFinalizing}>
               {isFinalizing ? "Finalizing..." : "🏁 Finalize & Archive This Week"}
             </button>
           </div>
@@ -668,6 +675,7 @@ const S = {
   finalizeBtn: { width: "100%", background: "#7c3aed", border: "none", borderRadius: 12, padding: 16, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" },
   qaMicBtn: { background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: "8px 10px", fontSize: 16, cursor: "pointer", flexShrink: 0, color: "#94a3b8" },
   qaMicBtnActive: { background: "#4a1a1a", border: "1px solid #ef4444", color: "#f87171" },
+  downloadBtn: { display: "block", width: "100%", background: "#065f46", border: "1px solid #10b981", borderRadius: 10, padding: "12px 16px", color: "#6ee7b7", fontSize: 14, fontWeight: 700, cursor: "pointer", textAlign: "center", textDecoration: "none", marginBottom: 8, boxSizing: "border-box" },
   qaClearBtn: { background: "transparent", border: "1px solid #334155", borderRadius: 6, padding: "4px 8px", fontSize: 12, cursor: "pointer", color: "#64748b" },
   qaConfirmed: { display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: "#0d2818", borderRadius: 6, border: "1px solid #166534" },
 };
