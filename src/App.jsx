@@ -42,6 +42,7 @@ function detectTypeFromText(text) {
   const dmKw = ["district manager", "corporate support", "dm request", "support request", "dm support", "manager support"];
   // Admin checked FIRST — must not fall into service even if service words appear
   const adminKw = ["admin", "administrative", "fsr completion", "paperwork", "conference call", "meeting with team", "office work", "desk work"];
+  const salesKw = ["sales call", "new business", "prospect", "quote", "proposal", "follow up", "follow-up"];
   const serviceKw = ["service call", "serviced", "service for", "field service", "treatment", "chemical feed", "dosing", "sampling", "disinfection", "legionella", "boiler", "cooling tower", "repair", "installed equipment", "maintenance", "did a service", "did service"];
   for (const k of dmKw) if (t.includes(k)) return "dm";
   for (const k of adminKw) if (t.includes(k)) return "admin"; // admin before service
@@ -165,9 +166,11 @@ export default function App() {
    // Pre-clean transcript before AI
   function preclean(text) {
     return text
-      .replace(/(on\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)[,\s]*/gi, "")
-      .replace(/(yesterday|today|this morning|this afternoon|this evening)[,\s]*/gi, "")
-      .replace(/(I did some|I did|I went|I have|I had|I was|I am|I called|such as|etc\.?)\s*/gi, "")
+      .replace(/\b(on\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b[,.]?\s*/gi, "")
+      .replace(/\b(yesterday|today|this morning|this afternoon|this evening)\b[,.]?\s*/gi, "")
+      .replace(/\b(I did some|I did a|I did|I went to|I went|I have|I had|I was|I am|I\'ve|such as|etc\.?|and also|also)\b\s*/gi, "")
+      .replace(/\bat the\b\s+/gi, "at ")
+      .replace(/\ba (service call|sales call|service|service)\b/gi, "$1")
       .replace(/\s+/g, " ").trim();
   }
 
