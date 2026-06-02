@@ -194,7 +194,9 @@ export default function App() {
 
 
   function addEntry() {
-    const text = aiProcessed || currentTranscript;
+    // Always preclean regardless of whether AI was used
+    const raw = aiProcessed || currentTranscript;
+    const text = preclean(raw);
     if (!text.trim()) return;
     const targetDay = confirmedDayRef.current;
     setEntries((prev) => ({ ...prev, [targetDay]: [...(prev[targetDay] || []), { type: entryType, text, day: targetDay }] }));
