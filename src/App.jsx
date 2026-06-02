@@ -550,18 +550,38 @@ Now process: "${precleaned}"` }],
             { key: "growth", label: "Personal development goals this week?" },
             { key: "comments", label: "Other comments?" },
           ].map(({ key, label }) => (
-            <div key={key} style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 4, fontWeight: 600 }}>{label}</div>
-              <div style={{ display: "flex", gap: 6, alignItems: "flex-start" }}>
-                <textarea style={{ ...S.qaInput, flex: 1 }} value={qaAnswers[key]} onChange={(e) => setQaAnswers((p) => ({ ...p, [key]: e.target.value }))} placeholder="Type or tap 🎙️ to dictate..." rows={2}></textarea>
-                <button
-                  style={{ ...S.qaMicBtn, ...(qaRecording === key ? S.qaMicBtnActive : {}) }}
-                  onClick={() => qaRecording === key ? stopQARecording() : startQARecording(key)}
-                >
-                  {qaRecording === key ? "⏹" : "🎙️"}
-                </button>
+            <div key={key} style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 6, fontWeight: 600 }}>{label}</div>
+              <div style={{ display: "flex", gap: 6, alignItems: "flex-start", marginBottom: 6 }}>
+                <textarea
+                  style={{ ...S.qaInput, flex: 1 }}
+                  value={qaAnswers[key]}
+                  onChange={(e) => setQaAnswers((p) => ({ ...p, [key]: e.target.value }))}
+                  placeholder="Type or tap 🎙️ to dictate..."
+                  rows={2}
+                ></textarea>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <button
+                    style={{ ...S.qaMicBtn, ...(qaRecording === key ? S.qaMicBtnActive : {}) }}
+                    onClick={() => qaRecording === key ? stopQARecording() : startQARecording(key)}
+                  >
+                    {qaRecording === key ? "⏹" : "🎙️"}
+                  </button>
+                  {qaAnswers[key] && (
+                    <button
+                      style={S.qaClearBtn}
+                      onClick={() => setQaAnswers(p => ({ ...p, [key]: "" }))}
+                      title="Clear answer"
+                    >✕</button>
+                  )}
+                </div>
               </div>
-              {qaRecording === key && <div style={{ fontSize: 10, color: "#f87171", marginTop: 3 }}>● Recording... tap ⏹ to stop</div>}
+              {qaRecording === key && <div style={{ fontSize: 10, color: "#f87171", marginBottom: 4 }}>● Recording... tap ⏹ to stop</div>}
+              {qaAnswers[key] && (
+                <div style={S.qaConfirmed}>
+                  <span style={{ fontSize: 11, color: "#4ade80" }}>✅ Answer saved</span>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -648,4 +668,6 @@ const S = {
   finalizeBtn: { width: "100%", background: "#7c3aed", border: "none", borderRadius: 12, padding: 16, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" },
   qaMicBtn: { background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: "8px 10px", fontSize: 16, cursor: "pointer", flexShrink: 0, color: "#94a3b8" },
   qaMicBtnActive: { background: "#4a1a1a", border: "1px solid #ef4444", color: "#f87171" },
+  qaClearBtn: { background: "transparent", border: "1px solid #334155", borderRadius: 6, padding: "4px 8px", fontSize: 12, cursor: "pointer", color: "#64748b" },
+  qaConfirmed: { display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: "#0d2818", borderRadius: 6, border: "1px solid #166534" },
 };
