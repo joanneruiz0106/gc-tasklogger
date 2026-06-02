@@ -185,24 +185,52 @@ export default function App() {
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
-          messages: [{ role: "user", content: `Rewrite this field sales work log as ONE professional sentence under 20 words. Start with an action verb or customer name. Never start with "I". Remove all filler. Respond with ONLY the sentence.\n\nExamples:\n"service call UCSC Hospital" → "Serviced UCSC Hospital."\n"administrative work UCSD Health" → "Completed administrative work at UCSD Health."\n"called Jensen Foods Juan Carlos water use log" → "Called Jensen Foods; Juan Carlos to provide water use log."\n\nRewrite: "${precleaned}"` }],
+          messages: [{ role: "user", content: `You are a field sales assistant for Garratt-Callahan water treatment. The input may contain multiple activities. Split them into separate lines, one activity per line. Each line must: start with a capital letter, start with an action verb or customer name, never start with "I", be under 20 words, remove all filler words.
+
+Examples:
+"service call Omni hospital. sales call ABC hospital" →
+Serviced Omni Hospital.
+Called ABC Hospital for new business.
+
+"administrative work UCSD Health. service call Google services" →
+Completed administrative work at UCSD Health.
+Serviced Google Services Center.
+
+Now process: "${precleaned}"` }],
         }),
       });
       const data = await res.json();
-      // Fallback to precleaned if AI fails
-      setAiProcessed(data.content?.[0]?.text?.trim() || precleaned);
-    } catch { setAiProcessed(precleaned); }
+      const result = (data.content?.[0]?.text?.trim() || precleaned);
+      // Capitalize first letter of each line
+      const capitalized = result.split("\n")
+        .map(l => l.trim())
+        .filter(l => l.length > 0)
+        .map(l => l.charAt(0).toUpperCase() + l.slice(1))
+        .join("\n");
+      setAiProcessed(capitalized);
+    } catch { setAiProcessed(precleaned.charAt(0).toUpperCase() + precleaned.slice(1)); }
     setIsProcessing(false);
+  }
   }
 
 
   function addEntry() {
-    // Always preclean regardless of whether AI was used
     const raw = aiProcessed || currentTranscript;
-    const text = preclean(raw);
-    if (!text.trim()) return;
+    if (!raw.trim()) return;
     const targetDay = confirmedDayRef.current;
-    setEntries((prev) => ({ ...prev, [targetDay]: [...(prev[targetDay] || []), { type: entryType, text, day: targetDay }] }));
+    // Split multi-line AI output — each line becomes its own typed entry
+    const entryLines = raw.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+    setEntries((prev) => {
+      const updated = { ...prev };
+      entryLines.forEach(line => {
+        const cleaned = preclean(line);
+        const final = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+        if (!final) return;
+        const lineType = detectTypeFromText(line); // detect type per line
+        updated[targetDay] = [...(updated[targetDay] || []), { type: lineType, text: final, day: targetDay }];
+      });
+      return updated;
+    });
     setCurrentTranscript(""); setAiProcessed("");
   }
 
