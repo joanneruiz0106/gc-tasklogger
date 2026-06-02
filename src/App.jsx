@@ -162,9 +162,19 @@ export default function App() {
   }
   function toggleRecording() { isRecordingRef.current ? stopRecording() : startRecording(); }
 
+   // Pre-clean transcript before AI
+  function preclean(text) {
+    return text
+      .replace(/(on\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)[,\s]*/gi, "")
+      .replace(/(yesterday|today|this morning|this afternoon|this evening)[,\s]*/gi, "")
+      .replace(/(I did some|I did|I went|I have|I had|I was|I am|I called|such as|etc\.?)\s*/gi, "")
+      .replace(/\s+/g, " ").trim();
+  }
+
   async function processWithAI() {
     if (!currentTranscript.trim()) return;
     setIsProcessing(true); setAiProcessed("");
+    const precleaned = preclean(currentTranscript);
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -172,14 +182,16 @@ export default function App() {
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 1000,
-          messages: [{ role: "user", content: `You are a field sales assistant for Garratt-Callahan water treatment. Clean up this voice-dictated work log entry into ONE professional sentence under 20 words. Rules: (1) Remove ALL day/time references: "yesterday", "today", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "this morning", "this afternoon" (2) Remove filler: "I did", "I called", "I went", "I did some", "such as", "etc" (3) Start with the action verb or customer name (4) Preserve customer names, specific actions, next steps (5) Respond with ONLY the final sentence, nothing else.\n\nExamples:\n"yesterday I did service call on Omni Hospital" → "Serviced Omni Hospital."\n"today I called Jensen Foods Juan Carlos to get water use log" → "Called Jensen Foods; Juan Carlos to provide water use log."\n"Thursday I did administrative work FSR completion" → "Completed FSRs; administrative work."\n"I met with Heritage bag to review the scale process" → "Met with Heritage Bag; reviewed descale process."\n\nNow clean this: "${currentTranscript}"` }],
+          messages: [{ role: "user", content: `Rewrite this field sales work log as ONE professional sentence under 20 words. Start with an action verb or customer name. Never start with "I". Remove all filler. Respond with ONLY the sentence.\n\nExamples:\n"service call UCSC Hospital" → "Serviced UCSC Hospital."\n"administrative work UCSD Health" → "Completed administrative work at UCSD Health."\n"called Jensen Foods Juan Carlos water use log" → "Called Jensen Foods; Juan Carlos to provide water use log."\n\nRewrite: "${precleaned}"` }],
         }),
       });
       const data = await res.json();
-      setAiProcessed(data.content?.[0]?.text?.trim() || currentTranscript);
-    } catch { setAiProcessed(currentTranscript); }
+      // Fallback to precleaned if AI fails
+      setAiProcessed(data.content?.[0]?.text?.trim() || precleaned);
+    } catch { setAiProcessed(precleaned); }
     setIsProcessing(false);
   }
+
 
   function addEntry() {
     const text = aiProcessed || currentTranscript;
