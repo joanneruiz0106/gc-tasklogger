@@ -62,12 +62,10 @@ export default async function handler(req, res) {
 
       if (!weekOf) weekOf = new Date().toISOString().slice(0, 10);
 
-      // 2. Copy the file
-      const copyRes = await drive.files.copy({
-        fileId: spreadsheetId,
-        requestBody: { name: `GC Weekly Report - Week of ${weekOf}` },
-      });
+      // 2. Generate a download URL for the sheet as Excel file
+      // Export to xlsx format - user downloads it directly (no Drive storage needed)
       const copyName = `GC Weekly Report - Week of ${weekOf}`;
+      const exportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=xlsx&name=${encodeURIComponent(copyName)}`;
 
       // 3. Get sheet metadata to find data rows to clear
       const metaRes = await sheets.spreadsheets.get({ spreadsheetId });
@@ -131,7 +129,7 @@ export default async function handler(req, res) {
         });
       }
 
-      return res.json({ copyName, weekOf, nextWeek: nextWeekStr });
+      return res.json({ copyName, weekOf, nextWeek: nextWeekStr, exportUrl });
     }
 
     return res.status(400).json({ error: "Unknown action" });
