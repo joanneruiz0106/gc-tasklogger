@@ -107,46 +107,57 @@ export default function App() {
     } catch (e) { setSyncStatus(`⚠️ ${e.message}`); }
   }
 
-  const recordingTimeoutRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
 
-  function startRecording() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { setSyncStatus("⚠️ Voice not supported. Use Chrome (Android) or Safari (iOS)."); return; }
-    setCurrentTranscript(""); setAiProcessed("");
-    const rec = new SR();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = "en-US";
-    let accumulated = "";
-    rec.onresult = (e) => {
-      let interim = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) accumulated += e.results[i][0].transcript + " ";
-        else interim = e.results[i][0].transcript;
-      }
-      const t = (accumulated + interim).trim();
-      setCurrentTranscript(t);
-      const detDay = detectDayFromText(t);
-      const detType = detectTypeFromText(t);
-      if (detDay !== null) { confirmedDayRef.current = detDay; setSelectedDay(detDay); }
-      else { confirmedDayRef.current = TODAY_IDX; }
-      if (detType) setEntryType(detType);
-      // Auto-stop 2.5s after last speech (silence detection)
-      if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
-      recordingTimeoutRef.current = setTimeout(() => { try { rec.stop(); } catch(e) {} }, 2500);
-    };
-    rec.onerror = (e) => { if (e.error !== "no-speech") setIsRecording(false); };
-    rec.onend = () => { if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current); setIsRecording(false); };
-    rec.start();
-    recognitionRef.current = rec;
-    setIsRecording(true);
-    // Hard stop at 90 seconds
-    recordingTimeoutRef.current = setTimeout(() => { try { rec.stop(); } catch(e) {} }, 90000);
+  async function startRecording() {
+    try {
+      setCurrentTranscript(""); setAiProcessed("");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4" });
+      audioChunksRef.current = [];
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const mimeType = mediaRecorder.mimeType || "audio/webm";
+        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+        setIsRecording(false);
+        setSyncStatus("🔄 Transcribing...");
+        try {
+          const formData = new FormData();
+          formData.append("file", audioBlob, "recording." + (mimeType.includes("mp4") ? "mp4" : "webm"));
+          formData.append("model", "whisper-1");
+          formData.append("language", "en");
+          const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}` },
+            body: formData,
+          });
+          const data = await res.json();
+          const t = (data.text || "").trim();
+          if (t) {
+            setCurrentTranscript(t);
+            setSyncStatus("");
+            const detDay = detectDayFromText(t);
+            const detType = detectTypeFromText(t);
+            if (detDay !== null) { confirmedDayRef.current = detDay; setSelectedDay(detDay); }
+            else { confirmedDayRef.current = TODAY_IDX; }
+            if (detType) setEntryType(detType);
+          } else {
+            setSyncStatus("⚠️ No speech detected. Try again.");
+          }
+        } catch(e) { setSyncStatus("⚠️ Transcription failed: " + e.message); }
+      };
+      mediaRecorder.start();
+      mediaRecorderRef.current = mediaRecorder;
+      setIsRecording(true);
+    } catch(e) { setSyncStatus("⚠️ Mic access denied: " + e.message); }
   }
 
   function stopRecording() {
-    if (recordingTimeoutRef.current) clearTimeout(recordingTimeoutRef.current);
-    recognitionRef.current?.stop();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
     setIsRecording(false);
   }
   function toggleRecording() { isRecordingRef.current ? stopRecording() : startRecording(); }
@@ -399,7 +410,7 @@ export default function App() {
             <span style={{ fontSize: 24 }}>{isRecording ? "⏹" : "🎙️"}</span>
             <span>{isRecording ? "Tap to Stop" : "Tap to Record"}</span>
           </button>
-          {isRecording && <div style={S.listeningBadge}>● Listening...</div>}
+          {isRecording && <div style={S.listeningBadge}>🔴 Recording... tap stop when done</div>}
 
           {currentTranscript && (
             <div style={S.transcriptBox}>
