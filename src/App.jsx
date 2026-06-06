@@ -295,8 +295,8 @@ Now process: "${precleaned}"` }],
       if (data.error) {
         setFinalizeStatus(`⚠️ ${data.error}`);
       } else {
-        setFinalizeStatus(`✅ Done! Template cleared for week of ${data.nextWeek}.`);
-        if (data.exportUrl) setExportUrl(data.exportUrl);
+        setFinalizeStatus(`✅ Done! Saved as "${data.copyName}". Template ready for week of ${data.nextWeek}.`);
+        if (data.driveLink) setExportUrl(data.driveLink);
       }
     } catch (e) {
       setFinalizeStatus(`⚠️ ${e.message}`);
@@ -614,8 +614,8 @@ Now process: "${precleaned}"` }],
             <div style={S.finalizeSub}>Saves a copy of this week&apos;s report, clears the template, and updates the date for next week.</div>
             {finalizeStatus && <div style={{...S.statusMsg, marginBottom: 8}}>{finalizeStatus}</div>}
             {exportUrl && (
-              <a href={exportUrl} download style={S.downloadBtn}>
-                📥 Download Weekly Report (.xlsx)
+              <a href={exportUrl} target="_blank" rel="noopener noreferrer" style={S.downloadBtn}>
+                📂 Open Archived Report in Drive
               </a>
             )}
             <button style={{ ...S.finalizeBtn, ...(isFinalizing ? S.syncBtnOff : {}), marginTop: 8 }} onClick={finalizeWeek} disabled={isFinalizing}>
