@@ -46,17 +46,37 @@ export default async function handler(req, res) {
       });
       const rows = allRows.data.values || [];
 
-      // Find week of date
+      // Find week of date - check multiple patterns
       let weekOf = "";
       let weekOfRow = -1, weekOfCol = -1;
       rows.forEach((row, ri) => {
         row.forEach((cell, ci) => {
-          if (typeof cell === "string" && cell.toLowerCase().includes("week of")) {
+          const cellStr = (cell || "").toString().toLowerCase();
+          if (cellStr.includes("week of") || cellStr.includes("week of:")) {
             weekOfRow = ri; weekOfCol = ci;
-            if (row[ci + 1]) weekOf = row[ci + 1].toString().trim();
+            // Check adjacent cells for the date value
+            for (let offset = 1; offset <= 4; offset++) {
+              if (row[ci + offset] && row[ci + offset].toString().trim()) {
+                weekOf = row[ci + offset].toString().trim();
+                break;
+              }
+            }
           }
         });
+        // Also check if "week of:" label and date are in same cell
+        row.forEach((cell) => {
+          const cellStr = (cell || "").toString();
+          const match = cellStr.match(/week\s+of[:\s]+(\d+\/\d+\/\d+)/i);
+          if (match) weekOf = match[1].trim();
+        });
       });
+      
+      // Fallback to today's date if still not found
+      if (!weekOf) {
+        const now = new Date();
+        weekOf = (now.getMonth()+1) + "/" + now.getDate() + "/" + now.getFullYear();
+      }
+      console.log("weekOf detected:", weekOf, "at row:", weekOfRow, "col:", weekOfCol);
 
       // Format date as mmddyyyy for filename
       let fileDate = new Date().toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }).replace(/\//g, "");
