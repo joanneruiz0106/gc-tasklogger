@@ -295,8 +295,19 @@ Now process: "${precleaned}"` }],
       if (data.error) {
         setFinalizeStatus(`⚠️ ${data.error}`);
       } else {
-        setFinalizeStatus(`✅ Done! Saved as "${data.copyName}". Template ready for week of ${data.nextWeek}.`);
-        if (data.driveLink) setExportUrl(data.driveLink);
+        // Trigger browser download from base64
+        if (data.base64) {
+          const bytes = Uint8Array.from(atob(data.base64), c => c.charCodeAt(0));
+          const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = data.fileName;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+        setFinalizeStatus(`✅ "${data.fileName}" downloaded! Template ready for week of ${data.nextWeek}.`);
+        setExportUrl("");
       }
     } catch (e) {
       setFinalizeStatus(`⚠️ ${e.message}`);
@@ -613,11 +624,7 @@ Now process: "${precleaned}"` }],
             <div style={S.finalizeTitle}>🏁 End of Week</div>
             <div style={S.finalizeSub}>Saves a copy of this week&apos;s report, clears the template, and updates the date for next week.</div>
             {finalizeStatus && <div style={{...S.statusMsg, marginBottom: 8}}>{finalizeStatus}</div>}
-            {exportUrl && (
-              <a href={exportUrl} target="_blank" rel="noopener noreferrer" style={S.downloadBtn}>
-                📂 Open Archived Report in Drive
-              </a>
-            )}
+
             <button style={{ ...S.finalizeBtn, ...(isFinalizing ? S.syncBtnOff : {}), marginTop: 8 }} onClick={finalizeWeek} disabled={isFinalizing}>
               {isFinalizing ? "Finalizing..." : "🏁 Finalize & Archive This Week"}
             </button>
