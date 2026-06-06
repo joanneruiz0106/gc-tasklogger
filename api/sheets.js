@@ -35,62 +35,102 @@ export default async function handler(req, res) {
       return res.json({ updatedCells: response.data.totalUpdatedCells });
     }
 
-    // FINALIZE — copy file, rename with date, clear template, update week date
+    // FINALIZE
     if (action === "finalize") {
       const SPREADSHEET_TAB = tab || "Friday Report";
 
-      // 1. Read current sheet to find "Week of" date
-      const readRes = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: `${SPREADSHEET_TAB}!A1:N5`,
-      });
-      const rows = readRes.data.values || [];
-      let weekOf = "";
-      rows.forEach(row => {
-        row.forEach(cell => {
-          if (typeof cell === "string" && cell.toLowerCase().includes("week of")) {
-            // Extract date from cell like "Week of: 5/4/2026" or adjacent cell
-            const match = cell.match(/\d+\/\d+\/\d+/);
-            if (match) weekOf = match[0].replace(/\//g, "-");
-          }
-        });
-        // Also check if week of label is in one cell and date in next
-        if ((row[0] || "").toLowerCase().includes("week of") && row[1]) {
-          weekOf = row[1].toString().replace(/\//g, "-").trim();
-        }
-      });
-
-      if (!weekOf) weekOf = new Date().toISOString().slice(0, 10);
-
-      // 2. Generate a download URL for the sheet as Excel file
-      // Export to xlsx format - user downloads it directly (no Drive storage needed)
-      const copyName = `GC Weekly Report - Week of ${weekOf}`;
-      const exportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=xlsx&name=${encodeURIComponent(copyName)}`;
-
-      // 3. Get sheet metadata to find data rows to clear
-      const metaRes = await sheets.spreadsheets.get({ spreadsheetId });
-      const sheetObj = metaRes.data.sheets?.find(s => s.properties.title === SPREADSHEET_TAB);
-      if (!sheetObj) return res.status(400).json({ error: `Tab "${SPREADSHEET_TAB}" not found` });
-
-      // 4. Clear data rows — read all rows, find day blocks, clear cols B, E, M
+      // Step 1: Read sheet to find "Week of" date
       const allRows = await sheets.spreadsheets.values.get({
         spreadsheetId,
         range: `${SPREADSHEET_TAB}!A1:N80`,
       });
-      const allData = allRows.data.values || [];
+      const rows = allRows.data.values || [];
+
+      // Find week of date
+      let weekOf = "";
+      let weekOfRow = -1, weekOfCol = -1;
+      rows.forEach((row, ri) => {
+        row.forEach((cell, ci) => {
+          if (typeof cell === "string" && cell.toLowerCase().includes("week of")) {
+            weekOfRow = ri; weekOfCol = ci;
+            // Check adjacent cell for date value
+            if (row[ci + 1]) weekOf = row[ci + 1].toString().trim();
+          }
+        });
+      });
+
+      // Format date as mmddyyyy for filename
+      let fileDate = "unknown";
+      if (weekOf) {
+        const parts = weekOf.split("/");
+        if (parts.length === 3) {
+          const mm = parts[0].padStart(2, "0");
+          const dd = parts[1].padStart(2, "0");
+          const yyyy = parts[2];
+          fileDate = `${mm}${dd}${yyyy}`;
+        } else {
+          fileDate = weekOf.replace(/\//g, "");
+        }
+      }
+      const copyName = `GC Weekly Report.${fileDate}.xlsx`;
+
+      // Step 2: Export current sheet as xlsx BEFORE clearing
+      // Get the file using drive export - this captures current data
+      const exportRes = await drive.files.export(
+        {
+          fileId: spreadsheetId,
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+        { responseType: "arraybuffer" }
+      );
+
+      // Step 3: Upload the exported xlsx as a new file in same folder as original
+      // First get parent folder of original file
+      const fileMeta = await drive.files.get({
+        fileId: spreadsheetId,
+        fields: "parents",
+      });
+      const parents = fileMeta.data.parents || [];
+
+      // Upload xlsx copy to user's drive (shared with service account)
+      const { Readable } = require("stream");
+      const buffer = Buffer.from(exportRes.data);
+      const stream = Readable.from(buffer);
+
+      const uploadRes = await drive.files.create({
+        requestBody: {
+          name: copyName,
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          parents: parents,
+        },
+        media: {
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          body: stream,
+        },
+        fields: "id, name, webViewLink",
+      });
+
+      // Step 4: Clear data cells in original template
       const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
       const clearRanges = [];
-
-      allData.forEach((row, idx) => {
+      rows.forEach((row, idx) => {
         const cell = (row[0] || "").trim().toLowerCase();
         const isDay = DAYS.some(d => cell === d.toLowerCase() || cell.startsWith(d.toLowerCase() + " "));
-        if (!isDay) {
-          // Clear data columns B, E, M on non-header rows that have data
+        const isHeader = idx < 5; // keep header rows
+        if (!isDay && !isHeader) {
           if (row[1] || row[4] || row[12]) {
-            clearRanges.push(`${SPREADSHEET_TAB}!B${idx + 1}:B${idx + 1}`);
-            clearRanges.push(`${SPREADSHEET_TAB}!E${idx + 1}:E${idx + 1}`);
-            clearRanges.push(`${SPREADSHEET_TAB}!M${idx + 1}:M${idx + 1}`);
+            clearRanges.push(`${SPREADSHEET_TAB}!B${idx + 1}`);
+            clearRanges.push(`${SPREADSHEET_TAB}!E${idx + 1}`);
+            clearRanges.push(`${SPREADSHEET_TAB}!M${idx + 1}`);
           }
+        }
+      });
+      // Also clear Q&A section rows
+      const qaKeywords = ["renewed", "jeopardy", "tss", "personal dev", "other comments"];
+      rows.forEach((row, idx) => {
+        const cell = (row[0] || "").toLowerCase();
+        if (qaKeywords.some(kw => cell.includes(kw)) && row[1]) {
+          clearRanges.push(`${SPREADSHEET_TAB}!B${idx + 1}`);
         }
       });
 
@@ -101,25 +141,14 @@ export default async function handler(req, res) {
         });
       }
 
-      // 5. Update "Week of" to next Monday
+      // Step 5: Update "Week of" to next Monday
       const nextMonday = new Date();
       const dayOfWeek = nextMonday.getDay();
       const daysUntilMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
       nextMonday.setDate(nextMonday.getDate() + daysUntilMonday);
       const nextWeekStr = `${nextMonday.getMonth() + 1}/${nextMonday.getDate()}/${nextMonday.getFullYear()}`;
 
-      // Find and update the Week of cell
-      let weekOfRow = -1, weekOfCol = -1;
-      allData.forEach((row, ri) => {
-        row.forEach((cell, ci) => {
-          if (typeof cell === "string" && cell.toLowerCase().includes("week of")) {
-            weekOfRow = ri; weekOfCol = ci;
-          }
-        });
-      });
-
       if (weekOfRow >= 0) {
-        // Update adjacent cell (col + 1) with new date
         const colLetter = String.fromCharCode(65 + weekOfCol + 1);
         await sheets.spreadsheets.values.update({
           spreadsheetId,
@@ -129,7 +158,13 @@ export default async function handler(req, res) {
         });
       }
 
-      return res.json({ copyName, weekOf, nextWeek: nextWeekStr, exportUrl });
+      return res.json({
+        copyName,
+        weekOf,
+        nextWeek: nextWeekStr,
+        driveLink: uploadRes.data.webViewLink,
+        fileId: uploadRes.data.id,
+      });
     }
 
     return res.status(400).json({ error: "Unknown action" });
