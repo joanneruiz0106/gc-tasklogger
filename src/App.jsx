@@ -281,6 +281,49 @@ Now process: "${precleaned}"` }],
     setEntries((prev) => ({ ...prev, [dayIdx]: prev[dayIdx].filter((_, i) => i !== idx) }));
   }
 
+  async function syncQA() {
+    if (!spreadsheetId) return;
+    setSyncStatus("Syncing Q&A...");
+    try {
+      const readRes = await fetch("/api/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "read", spreadsheetId, range: `${SPREADSHEET_TAB}!A1:N80` }),
+      });
+      const readData = await readRes.json();
+      const rows = readData.values || [];
+
+      const qaKeywordMap = {
+        renewals: ["renewed", "up to date", "expir"],
+        jeopardy: ["jeopardy"],
+        tssSupport: ["tss"],
+        growth: ["personal dev", "development goal"],
+        comments: ["other comments", "comments"],
+      };
+
+      const batchData = [];
+      rows.forEach((row, idx) => {
+        const cell = (row[0] || "").toLowerCase();
+        Object.entries(qaKeywordMap).forEach(([key, kws]) => {
+          if (qaAnswers[key] && kws.some(kw => cell.includes(kw))) {
+            batchData.push({ range: `'${SPREADSHEET_TAB}'!B${idx + 2}`, values: [[qaAnswers[key]]] });
+          }
+        });
+      });
+
+      if (!batchData.length) { setSyncStatus("⚠️ Q&A rows not found in sheet."); return; }
+
+      const writeRes = await fetch("/api/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "write", spreadsheetId, data: batchData }),
+      });
+      const writeData = await writeRes.json();
+      if (writeData.error) { setSyncStatus(`⚠️ ${writeData.error}`); }
+      else { setSyncStatus(`✅ Q&A synced to sheet!`); }
+    } catch(e) { setSyncStatus(`⚠️ ${e.message}`); }
+  }
+
   async function finalizeWeek() {
     if (!spreadsheetId) return;
     setIsFinalizing(true);
@@ -682,6 +725,7 @@ const S = {
   finalizeBtn: { width: "100%", background: "#7c3aed", border: "none", borderRadius: 12, padding: 16, color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" },
   qaMicBtn: { background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: "8px 10px", fontSize: 16, cursor: "pointer", flexShrink: 0, color: "#94a3b8" },
   qaMicBtnActive: { background: "#4a1a1a", border: "1px solid #ef4444", color: "#f87171" },
+  qaSubmitBtn: { width: "100%", background: "#1d4ed8", border: "none", borderRadius: 10, padding: "12px 16px", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", marginTop: 8 },
   downloadBtn: { display: "block", width: "100%", background: "#065f46", border: "1px solid #10b981", borderRadius: 10, padding: "12px 16px", color: "#6ee7b7", fontSize: 14, fontWeight: 700, cursor: "pointer", textAlign: "center", textDecoration: "none", marginBottom: 8, boxSizing: "border-box" },
   qaClearBtn: { background: "transparent", border: "1px solid #334155", borderRadius: 6, padding: "4px 8px", fontSize: 12, cursor: "pointer", color: "#64748b" },
   qaConfirmed: { display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: "#0d2818", borderRadius: 6, border: "1px solid #166534" },
