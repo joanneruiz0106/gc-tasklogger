@@ -9,7 +9,7 @@ export default async function handler(req, res) {
       credentials: serviceAccountJson,
       scopes: [
         "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.readonly",
       ],
     });
     const sheets = google.sheets({ version: "v4", auth });
@@ -35,7 +35,7 @@ export default async function handler(req, res) {
       return res.json({ updatedCells: response.data.totalUpdatedCells });
     }
 
-    // FINALIZE
+    // EXPORT — download xlsx as base64, then clear template
     if (action === "finalize") {
       const SPREADSHEET_TAB = tab || "Friday Report";
 
@@ -53,29 +53,22 @@ export default async function handler(req, res) {
         row.forEach((cell, ci) => {
           if (typeof cell === "string" && cell.toLowerCase().includes("week of")) {
             weekOfRow = ri; weekOfCol = ci;
-            // Check adjacent cell for date value
             if (row[ci + 1]) weekOf = row[ci + 1].toString().trim();
           }
         });
       });
 
       // Format date as mmddyyyy for filename
-      let fileDate = "unknown";
+      let fileDate = new Date().toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }).replace(/\//g, "");
       if (weekOf) {
         const parts = weekOf.split("/");
         if (parts.length === 3) {
-          const mm = parts[0].padStart(2, "0");
-          const dd = parts[1].padStart(2, "0");
-          const yyyy = parts[2];
-          fileDate = `${mm}${dd}${yyyy}`;
-        } else {
-          fileDate = weekOf.replace(/\//g, "");
+          fileDate = parts[0].padStart(2, "0") + parts[1].padStart(2, "0") + parts[2];
         }
       }
-      const copyName = `GC Weekly Report.${fileDate}.xlsx`;
+      const fileName = `GC Weekly Report.${fileDate}.xlsx`;
 
       // Step 2: Export current sheet as xlsx BEFORE clearing
-      // Get the file using drive export - this captures current data
       const exportRes = await drive.files.export(
         {
           fileId: spreadsheetId,
@@ -84,48 +77,24 @@ export default async function handler(req, res) {
         { responseType: "arraybuffer" }
       );
 
-      // Step 3: Upload the exported xlsx as a new file in same folder as original
-      // First get parent folder of original file
-      const fileMeta = await drive.files.get({
-        fileId: spreadsheetId,
-        fields: "parents",
-      });
-      const parents = fileMeta.data.parents || [];
+      // Convert to base64 to send back to browser
+      const base64 = Buffer.from(exportRes.data).toString("base64");
 
-      // Upload xlsx copy to user's drive (shared with service account)
-      const { Readable } = require("stream");
-      const buffer = Buffer.from(exportRes.data);
-      const stream = Readable.from(buffer);
-
-      const uploadRes = await drive.files.create({
-        requestBody: {
-          name: copyName,
-          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          parents: parents,
-        },
-        media: {
-          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          body: stream,
-        },
-        fields: "id, name, webViewLink",
-      });
-
-      // Step 4: Clear data cells in original template
+      // Step 3: Clear data cells in original template
       const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
       const clearRanges = [];
       rows.forEach((row, idx) => {
         const cell = (row[0] || "").trim().toLowerCase();
         const isDay = DAYS.some(d => cell === d.toLowerCase() || cell.startsWith(d.toLowerCase() + " "));
-        const isHeader = idx < 5; // keep header rows
+        const isHeader = idx < 5;
         if (!isDay && !isHeader) {
-          if (row[1] || row[4] || row[12]) {
-            clearRanges.push(`${SPREADSHEET_TAB}!B${idx + 1}`);
-            clearRanges.push(`${SPREADSHEET_TAB}!E${idx + 1}`);
-            clearRanges.push(`${SPREADSHEET_TAB}!M${idx + 1}`);
-          }
+          if (row[1]) clearRanges.push(`${SPREADSHEET_TAB}!B${idx + 1}`);
+          if (row[4]) clearRanges.push(`${SPREADSHEET_TAB}!E${idx + 1}`);
+          if (row[12]) clearRanges.push(`${SPREADSHEET_TAB}!M${idx + 1}`);
         }
       });
-      // Also clear Q&A section rows
+
+      // Clear Q&A rows
       const qaKeywords = ["renewed", "jeopardy", "tss", "personal dev", "other comments"];
       rows.forEach((row, idx) => {
         const cell = (row[0] || "").toLowerCase();
@@ -137,11 +106,11 @@ export default async function handler(req, res) {
       if (clearRanges.length) {
         await sheets.spreadsheets.values.batchClear({
           spreadsheetId,
-          requestBody: { ranges: clearRanges },
+          requestBody: { ranges: [...new Set(clearRanges)] },
         });
       }
 
-      // Step 5: Update "Week of" to next Monday
+      // Step 4: Update "Week of" to next Monday
       const nextMonday = new Date();
       const dayOfWeek = nextMonday.getDay();
       const daysUntilMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
@@ -158,12 +127,12 @@ export default async function handler(req, res) {
         });
       }
 
+      // Return base64 file for browser download
       return res.json({
-        copyName,
+        fileName,
+        base64,
         weekOf,
         nextWeek: nextWeekStr,
-        driveLink: uploadRes.data.webViewLink,
-        fileId: uploadRes.data.id,
       });
     }
 
