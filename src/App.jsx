@@ -294,11 +294,11 @@ Now process: "${precleaned}"` }],
       const rows = readData.values || [];
 
       const qaKeywordMap = {
-        renewals: ["renewed", "up to date", "expir"],
-        jeopardy: ["jeopardy"],
-        tssSupport: ["tss"],
-        growth: ["personal dev", "development goal"],
-        comments: ["other comments", "comments"],
+        renewals: ["are all your accounts renewed", "accounts renewed and up to date", "renewed and up to date"],
+        jeopardy: ["accounts in jeopardy", "jeopardy of being lost"],
+        tssSupport: ["enough tss support", "tss support"],
+        growth: ["personal develpment", "personal development", "growth areas"],
+        comments: ["other comments:", "other comments"],
       };
 
       const batchData = [];
@@ -408,7 +408,13 @@ Now process: "${precleaned}"` }],
         });
       });
 
-      const qaMap = { renewals: ["renewed", "up to date"], jeopardy: ["jeopardy"], tssSupport: ["tss"], growth: ["personal dev"], comments: ["other comments"] };
+      const qaMap = {
+        renewals: ["accounts renewed and up to date", "renewed and up to date"],
+        jeopardy: ["accounts in jeopardy", "jeopardy of being lost"],
+        tssSupport: ["enough tss support", "tss support"],
+        growth: ["personal develpment", "personal development", "growth areas"],
+        comments: ["other comments:", "other comments"],
+      };
       rows.forEach((row, idx) => {
         const cell = (row[0] || "").toLowerCase();
         Object.entries(qaMap).forEach(([key, kws]) => {
