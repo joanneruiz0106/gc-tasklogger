@@ -664,12 +664,19 @@ Now process: "${precleaned}"` }],
 
           <hr style={S.divider} />
           <div style={S.finalizeSection}>
-            <div style={S.finalizeTitle}>🏁 End of Week</div>
-            <div style={S.finalizeSub}>Saves a copy of this week&apos;s report, clears the template, and updates the date for next week.</div>
+            <div style={S.finalizeTitle}>📋 Sync Q&A Answers</div>
+            <div style={S.finalizeSub}>After filling in the End-of-Week Questions above, tap to sync them to the sheet. You can do this any day.</div>
+            <button style={S.qaSubmitBtn} onClick={syncQA}>
+              📤 Sync Q&A Answers to Sheet
+            </button>
+          </div>
+          <hr style={S.divider} />
+          <div style={S.finalizeSection}>
+            <div style={S.finalizeTitle}>🏁 Archive This Week</div>
+            <div style={S.finalizeSub}>Downloads the completed report as .xlsx, clears the template, and updates the date for next week.</div>
             {finalizeStatus && <div style={{...S.statusMsg, marginBottom: 8}}>{finalizeStatus}</div>}
-
             <button style={{ ...S.finalizeBtn, ...(isFinalizing ? S.syncBtnOff : {}), marginTop: 8 }} onClick={finalizeWeek} disabled={isFinalizing}>
-              {isFinalizing ? "Finalizing..." : "🏁 Finalize & Archive This Week"}
+              {isFinalizing ? "Archiving..." : "🏁 Finalize & Download Report"}
             </button>
           </div>
         </div>
