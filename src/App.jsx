@@ -301,17 +301,29 @@ Now process: "${precleaned}"` }],
         comments: ["other comments:", "other comments"],
       };
 
+      // Debug: log all non-empty col A values
+      const colAValues = rows.map((row, idx) => `R${idx+1}: "${(row[0]||"").substring(0,60)}"`).filter(s => !s.includes('""'));
+      console.log("Sheet col A:", colAValues);
+
       const batchData = [];
       rows.forEach((row, idx) => {
-        const cell = (row[0] || "").toLowerCase();
+        const cell = (row[0] || "").toLowerCase().trim();
         Object.entries(qaKeywordMap).forEach(([key, kws]) => {
-          if (qaAnswers[key] && kws.some(kw => cell.includes(kw))) {
-            batchData.push({ range: `'${SPREADSHEET_TAB}'!B${idx + 2}`, values: [[qaAnswers[key]]] });
+          if (qaAnswers[key] && kws.some(kw => cell.includes(kw.toLowerCase()))) {
+            // Write to col B of that row (same row, not +1)
+            batchData.push({ range: `'${SPREADSHEET_TAB}'!B${idx + 1}`, values: [[qaAnswers[key]]] });
+            console.log(`Matched ${key} at row ${idx+1}: "${cell.substring(0,40)}"`);
           }
         });
       });
 
-      if (!batchData.length) { setSyncStatus("⚠️ Q&A rows not found in sheet."); return; }
+      console.log("Q&A batch:", batchData.length, "updates");
+      if (!batchData.length) { 
+        setSyncStatus(`⚠️ Q&A rows not found. Check console for sheet values.`); 
+        setSyncLog(colAValues);
+        setShowLog(true);
+        return; 
+      }
 
       const writeRes = await fetch("/api/sheets", {
         method: "POST",
