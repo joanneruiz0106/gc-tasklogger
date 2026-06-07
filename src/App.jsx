@@ -314,14 +314,15 @@ Now process: "${precleaned}"` }],
         return;
       }
 
+      // Use writeQA action which handles merged cells differently
       const writeRes = await fetch("/api/sheets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "write", spreadsheetId, data: batchData }),
+        body: JSON.stringify({ action: "writeQA", spreadsheetId, qaData: batchData }),
       });
       const writeData = await writeRes.json();
       if (writeData.error) { setSyncStatus(`⚠️ ${writeData.error}`); }
-      else { setSyncStatus(`✅ Q&A synced to sheet! ${batchData.length} answer(s) written.`); }
+      else { setSyncStatus(`✅ Q&A synced! ${writeData.updatedCells} cell(s) written.`); }
     } catch(e) { setSyncStatus(`⚠️ ${e.message}`); }
   }
 
