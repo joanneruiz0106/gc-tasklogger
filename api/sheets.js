@@ -35,6 +35,28 @@ export default async function handler(req, res) {
       return res.json({ updatedCells: response.data.totalUpdatedCells });
     }
 
+    // WRITE QA — writes to merged cells one at a time using update (not batchUpdate)
+    if (action === "writeQA") {
+      const { qaData } = req.body;
+      let totalUpdated = 0;
+      const errors = [];
+      for (const item of qaData) {
+        try {
+          const resp = await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: item.range,
+            valueInputOption: "RAW",
+            requestBody: { values: item.values },
+          });
+          totalUpdated += resp.data.updatedCells || 0;
+        } catch(e) {
+          errors.push(`${item.range}: ${e.message}`);
+        }
+      }
+      if (errors.length) return res.json({ updatedCells: totalUpdated, errors });
+      return res.json({ updatedCells: totalUpdated });
+    }
+
     // EXPORT — download xlsx as base64, then clear template
     if (action === "finalize") {
       const SPREADSHEET_TAB = tab || "Friday Report";
