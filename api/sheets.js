@@ -64,7 +64,7 @@ export default async function handler(req, res) {
       // Step 1: Read sheet to find "Week of" date
       const allRows = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `${SPREADSHEET_TAB}!A1:N80`,
+        range: `${SPREADSHEET_TAB}!A1:N110`,
       });
       const rows = allRows.data.values || [];
 
@@ -122,34 +122,44 @@ export default async function handler(req, res) {
       // Convert to base64 to send back to browser
       const base64 = Buffer.from(exportRes.data).toString("base64");
 
-      // Step 3: Clear data cells in original template
-      const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+      // Step 3: Clear data using hardcoded ranges based on confirmed sheet structure
+      // Day blocks: cols B, E, M for data rows (rows 6-78)
+      // Q&A answer blocks: rows 80-82, 85-87, 90-92, 95-97, 100-102 in col A
+
       const clearRanges = [];
+
+      // Clear all data in Sales col B, Service col E, DM col M for rows 6-78
+      const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
       rows.forEach((row, idx) => {
+        const rowNum = idx + 1;
+        if (rowNum < 6 || rowNum > 78) return; // skip headers and Q&A area
         const cell = (row[0] || "").trim().toLowerCase();
         const isDay = DAYS.some(d => cell === d.toLowerCase() || cell.startsWith(d.toLowerCase() + " "));
-        const isHeader = idx < 5;
-        if (!isDay && !isHeader) {
-          if (row[1]) clearRanges.push(`${SPREADSHEET_TAB}!B${idx + 1}`);
-          if (row[4]) clearRanges.push(`${SPREADSHEET_TAB}!E${idx + 1}`);
-          if (row[12]) clearRanges.push(`${SPREADSHEET_TAB}!M${idx + 1}`);
+        if (!isDay) {
+          // Clear data columns regardless of whether they have content
+          // (some may have been cleared already or have empty strings)
+          clearRanges.push(`${SPREADSHEET_TAB}!B${rowNum}`);
+          clearRanges.push(`${SPREADSHEET_TAB}!E${rowNum}`);
+          clearRanges.push(`${SPREADSHEET_TAB}!M${rowNum}`);
         }
       });
 
-      // Clear Q&A rows
-      const qaKeywords = ["renewed", "jeopardy", "tss", "personal dev", "other comments"];
-      rows.forEach((row, idx) => {
-        const cell = (row[0] || "").toLowerCase();
-        if (qaKeywords.some(kw => cell.includes(kw)) && row[1]) {
-          clearRanges.push(`${SPREADSHEET_TAB}!B${idx + 1}`);
-        }
-      });
+      // Clear Q&A answer areas (hardcoded based on confirmed structure)
+      const qaAnswerRows = [80, 81, 82, 85, 86, 87, 90, 91, 92, 95, 96, 97, 100, 101, 102];
+      qaAnswerRows.forEach(r => clearRanges.push(`${SPREADSHEET_TAB}!A${r}`));
 
       if (clearRanges.length) {
-        await sheets.spreadsheets.values.batchClear({
-          spreadsheetId,
-          requestBody: { ranges: [...new Set(clearRanges)] },
-        });
+        // Split into chunks of 100 to avoid API limits
+        const chunks = [];
+        for (let i = 0; i < clearRanges.length; i += 100) {
+          chunks.push(clearRanges.slice(i, i + 100));
+        }
+        for (const chunk of chunks) {
+          await sheets.spreadsheets.values.batchClear({
+            spreadsheetId,
+            requestBody: { ranges: [...new Set(chunk)] },
+          });
+        }
       }
 
       // Step 4: Update "Week of" to next Monday
