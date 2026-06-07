@@ -285,44 +285,33 @@ Now process: "${precleaned}"` }],
     if (!spreadsheetId) return;
     setSyncStatus("Syncing Q&A...");
     try {
-      const readRes = await fetch("/api/sheets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "read", spreadsheetId, range: `${SPREADSHEET_TAB}!A1:N80` }),
-      });
-      const readData = await readRes.json();
-      const rows = readData.values || [];
-
-      const qaKeywordMap = {
-        renewals: ["are all your accounts renewed", "accounts renewed and up to date", "renewed and up to date"],
-        jeopardy: ["accounts in jeopardy", "jeopardy of being lost"],
-        tssSupport: ["enough tss support", "tss support"],
-        growth: ["personal develpment", "personal development", "growth areas"],
-        comments: ["other comments:", "other comments"],
+      // Hardcoded rows based on confirmed sheet structure
+      // Row 79 = renewals question, answer in rows 80-82 (use row 80)
+      // Row 84 = jeopardy question, answer in rows 85-87 (use row 85)
+      // Row 89 = TSS question, answer in rows 90-92 (use row 90)
+      // Row 94 = growth question, answer in rows 95-97 (use row 95)
+      // Row 99 = other comments, answer in rows 100-102 (use row 100)
+      const qaRows = {
+        renewals: 80,
+        jeopardy: 85,
+        tssSupport: 90,
+        growth: 95,
+        comments: 100,
       };
 
-      // Debug: log all non-empty col A values
-      const colAValues = rows.map((row, idx) => `R${idx+1}: "${(row[0]||"").substring(0,60)}"`).filter(s => !s.includes('""'));
-      console.log("Sheet col A:", colAValues);
-
       const batchData = [];
-      rows.forEach((row, idx) => {
-        const cell = (row[0] || "").toLowerCase().trim();
-        Object.entries(qaKeywordMap).forEach(([key, kws]) => {
-          if (qaAnswers[key] && kws.some(kw => cell.includes(kw.toLowerCase()))) {
-            // Write to col B of that row (same row, not +1)
-            batchData.push({ range: `'${SPREADSHEET_TAB}'!B${idx + 1}`, values: [[qaAnswers[key]]] });
-            console.log(`Matched ${key} at row ${idx+1}: "${cell.substring(0,40)}"`);
-          }
-        });
+      Object.entries(qaRows).forEach(([key, rowNum]) => {
+        if (qaAnswers[key]) {
+          batchData.push({
+            range: `'${SPREADSHEET_TAB}'!A${rowNum}`,
+            values: [[qaAnswers[key]]],
+          });
+        }
       });
 
-      console.log("Q&A batch:", batchData.length, "updates");
-      if (!batchData.length) { 
-        setSyncStatus(`⚠️ Q&A rows not found. Check console for sheet values.`); 
-        setSyncLog(colAValues);
-        setShowLog(true);
-        return; 
+      if (!batchData.length) {
+        setSyncStatus("⚠️ No Q&A answers to sync.");
+        return;
       }
 
       const writeRes = await fetch("/api/sheets", {
@@ -332,7 +321,7 @@ Now process: "${precleaned}"` }],
       });
       const writeData = await writeRes.json();
       if (writeData.error) { setSyncStatus(`⚠️ ${writeData.error}`); }
-      else { setSyncStatus(`✅ Q&A synced to sheet!`); }
+      else { setSyncStatus(`✅ Q&A synced to sheet! ${batchData.length} answer(s) written.`); }
     } catch(e) { setSyncStatus(`⚠️ ${e.message}`); }
   }
 
