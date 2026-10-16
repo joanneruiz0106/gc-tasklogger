@@ -57,57 +57,35 @@ export default async function handler(req, res) {
       return res.json({ updatedCells: totalUpdated });
     }
 
+    // WEEK INFO — returns the sheet's current "Week of" date (source of truth for the app)
+    if (action === "weekInfo") {
+      const SPREADSHEET_TAB = tab || "Friday Report";
+      const found = await findWeekOf(sheets, spreadsheetId, SPREADSHEET_TAB);
+      const monday = mondayOf(found.date || todayPT());
+      return res.json({ weekOf: toISO(monday), weekOfDisplay: toMDY(monday), fromSheet: !!found.date });
+    }
+
     // EXPORT — download xlsx as base64, then clear template
     if (action === "finalize") {
       const SPREADSHEET_TAB = tab || "Friday Report";
 
-      // Step 1: Read sheet to find "Week of" date
-      const allRows = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: `${SPREADSHEET_TAB}!A1:N110`,
-      });
-      const rows = allRows.data.values || [];
+      // Step 1: Read the "Week of" date from the sheet. The sheet — not today's date —
+      // decides which week is being finalized, so late finalizing (Sat/Sun/next week) works.
+      const found = await findWeekOf(sheets, spreadsheetId, SPREADSHEET_TAB);
+      const today = todayPT();
+      const weekMonday = mondayOf(found.date || today);
+      const weekOf = toMDY(found.date || weekMonday);
+      console.log("weekOf detected:", weekOf, "label row:", found.row, "date col:", found.dateCol);
 
-      // Find week of date - check multiple patterns
-      let weekOf = "";
-      let weekOfRow = -1, weekOfCol = -1;
-      rows.forEach((row, ri) => {
-        row.forEach((cell, ci) => {
-          const cellStr = (cell || "").toString().toLowerCase();
-          if (cellStr.includes("week of") || cellStr.includes("week of:")) {
-            weekOfRow = ri; weekOfCol = ci;
-            // Check adjacent cells for the date value
-            for (let offset = 1; offset <= 4; offset++) {
-              if (row[ci + offset] && row[ci + offset].toString().trim()) {
-                weekOf = row[ci + offset].toString().trim();
-                break;
-              }
-            }
-          }
+      // Guard: if the sheet's week hasn't started yet, this report was already finalized.
+      if (weekMonday > today) {
+        return res.status(409).json({
+          error: `Week of ${toMDY(weekMonday)} hasn't started yet — last week's report was already finalized.`,
         });
-        // Also check if "week of:" label and date are in same cell
-        row.forEach((cell) => {
-          const cellStr = (cell || "").toString();
-          const match = cellStr.match(/week\s+of[:\s]+(\d+\/\d+\/\d+)/i);
-          if (match) weekOf = match[1].trim();
-        });
-      });
-      
-      // Fallback to today's date if still not found
-      if (!weekOf) {
-        const now = new Date();
-        weekOf = (now.getMonth()+1) + "/" + now.getDate() + "/" + now.getFullYear();
       }
-      console.log("weekOf detected:", weekOf, "at row:", weekOfRow, "col:", weekOfCol);
 
-      // Format date as mmddyyyy for filename
-      let fileDate = new Date().toLocaleDateString("en-US", { month: "2-digit", day: "2-digit", year: "numeric" }).replace(/\//g, "");
-      if (weekOf) {
-        const parts = weekOf.split("/");
-        if (parts.length === 3) {
-          fileDate = parts[0].padStart(2, "0") + parts[1].padStart(2, "0") + parts[2];
-        }
-      }
+      // Filename uses the Week of date (mmddyyyy)
+      const fileDate = pad2(weekMonday.getUTCMonth() + 1) + pad2(weekMonday.getUTCDate()) + weekMonday.getUTCFullYear();
       const fileName = `GC Weekly Report.${fileDate}.xlsx`;
 
       // Step 2: Export current sheet as xlsx BEFORE clearing
@@ -145,20 +123,17 @@ export default async function handler(req, res) {
         requestBody: { ranges: clearRanges },
       });
 
-      // Step 4: Update "Week of" to next Monday
-      const nextMonday = new Date();
-      const dayOfWeek = nextMonday.getDay();
-      const daysUntilMonday = dayOfWeek === 0 ? 1 : 8 - dayOfWeek;
-      nextMonday.setDate(nextMonday.getDate() + daysUntilMonday);
-      const nextWeekStr = `${nextMonday.getMonth() + 1}/${nextMonday.getDate()}/${nextMonday.getFullYear()}`;
+      // Step 4: Update "Week of" to the Monday after the finalized week (Week of + 7 days),
+      // regardless of what day finalize was pressed or the server's timezone.
+      const nextMonday = addDays(weekMonday, 7);
+      const nextWeekStr = toMDY(nextMonday);
 
-      if (weekOfRow >= 0) {
-        const colLetter = String.fromCharCode(65 + weekOfCol + 1);
+      if (found.row >= 0) {
         await sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `${SPREADSHEET_TAB}!${colLetter}${weekOfRow + 1}`,
+          range: `${SPREADSHEET_TAB}!${colToLetter(found.dateCol)}${found.row + 1}`,
           valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[nextWeekStr]] },
+          requestBody: { values: [[found.sameCell ? `Week of: ${nextWeekStr}` : nextWeekStr]] },
         });
       }
 
@@ -168,6 +143,7 @@ export default async function handler(req, res) {
         base64,
         weekOf,
         nextWeek: nextWeekStr,
+        nextWeekISO: toISO(nextMonday),
       });
     }
 
@@ -176,4 +152,78 @@ export default async function handler(req, res) {
     console.error(e);
     return res.status(500).json({ error: e.message });
   }
+}
+
+// ---------- Date helpers (all dates are UTC-midnight Date objects for a calendar day) ----------
+const TZ = "America/Los_Angeles";
+const DAY_MS = 86400000;
+const pad2 = (n) => String(n).padStart(2, "0");
+
+// Today's calendar date in Pacific time (Vercel servers run in UTC)
+function todayPT() {
+  const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" })
+    .format(new Date()).split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+const addDays = (d, n) => new Date(d.getTime() + n * DAY_MS);
+function mondayOf(d) {
+  const dow = d.getUTCDay();
+  return addDays(d, dow === 0 ? -6 : 1 - dow);
+}
+const toMDY = (d) => `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${d.getUTCFullYear()}`;
+const toISO = (d) => `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+function colToLetter(idx) {
+  let s = ""; idx += 1;
+  while (idx > 0) { const r = (idx - 1) % 26; s = String.fromCharCode(65 + r) + s; idx = Math.floor((idx - 1) / 26); }
+  return s;
+}
+
+// Accepts a Sheets serial number, "9/21/2026", "09-21-26", "2026-09-21", "September 21, 2026"
+function parseSheetDate(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "number" && v > 20000 && v < 80000) {
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * DAY_MS);
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  }
+  const str = v.toString().trim();
+  let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  m = str.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+  if (m) {
+    let y = +m[3]; if (y < 100) y += 2000;
+    return new Date(Date.UTC(y, +m[1] - 1, +m[2]));
+  }
+  const t = Date.parse(str);
+  if (!isNaN(t)) { const d = new Date(t); return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); }
+  return null;
+}
+
+// Finds the "Week of:" label and the date cell next to it
+async function findWeekOf(sheets, spreadsheetId, tab) {
+  const resp = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${tab}!A1:N10`,
+    valueRenderOption: "UNFORMATTED_VALUE",
+    dateTimeRenderOption: "SERIAL_NUMBER",
+  });
+  const rows = resp.data.values || [];
+  for (let ri = 0; ri < rows.length; ri++) {
+    const row = rows[ri] || [];
+    for (let ci = 0; ci < row.length; ci++) {
+      const cellStr = (row[ci] ?? "").toString();
+      if (!/week\s+of/i.test(cellStr)) continue;
+      // Date in the same cell, e.g. "Week of: 9/21/2026"
+      const same = parseSheetDate(cellStr.replace(/.*week\s+of[:\s]*/i, ""));
+      if (same) return { date: same, row: ri, dateCol: ci, sameCell: true };
+      // Otherwise check the next few cells to the right
+      for (let off = 1; off <= 4; off++) {
+        const val = row[ci + off];
+        if (val === undefined || val === "") continue;
+        const d = parseSheetDate(val);
+        if (d) return { date: d, row: ri, dateCol: ci + off };
+      }
+      return { date: null, row: ri, dateCol: ci + 1 };
+    }
+  }
+  return { date: null, row: -1, dateCol: -1 };
 }

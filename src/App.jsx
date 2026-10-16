@@ -1,20 +1,38 @@
-// GC Task Logger v3.1 - 20260601-2350
+// GC Task Logger v3.2 - 20261016 — Week of driven by the sheet (late updates/finalize supported)
 import { useState, useRef, useEffect, useCallback } from "react";
 
 const SPREADSHEET_TAB = "Friday Report";
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-const TODAY_IDX = Math.min(Math.max(new Date().getDay() - 1, 0), 4);
 const COL_SALES = 1;   // B
 const COL_SERVICE = 4; // E
 const COL_DM = 12;     // M
 
-function getCurrentWeekOf() {
+// Monday of the current calendar week as "YYYY-MM-DD" (Sunday belongs to the week that started the prior Monday)
+function fallbackWeekISO() {
   const now = new Date();
   const day = now.getDay();
-  const diff = now.getDate() - day + (day === 0 ? -6 : 1);
-  const monday = new Date(new Date(now).setDate(diff));
-  return monday.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (day === 0 ? 6 : day - 1));
+  return `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, "0")}-${String(monday.getDate()).padStart(2, "0")}`;
 }
+
+function isoToLocalDate(iso) {
+  const [y, m, d] = (iso || fallbackWeekISO()).split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function formatWeekOf(iso) {
+  return isoToLocalDate(iso).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+}
+
+// Days elapsed since the sheet's "Week of" Monday (0 = Monday). Can be > 4 when updating late.
+function daysSinceWeekStart(iso) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((today - isoToLocalDate(iso)) / 86400000);
+}
+
+// Day index (0-4) within the sheet's week. Weekend or following week → Friday.
+function clampDay(n) { return Math.min(Math.max(n, 0), 4); }
 
 function getSpreadsheetIdFromUrl(url) {
   const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
@@ -25,9 +43,11 @@ function colLetter(idx) {
   return idx < 26 ? String.fromCharCode(65 + idx) : "A" + String.fromCharCode(65 + idx - 26);
 }
 
-function detectDayFromText(text) {
+function detectDayFromText(text, weekISO) {
   const t = text.toLowerCase();
-  if (t.includes("yesterday")) return Math.max(TODAY_IDX - 1, 0);
+  const elapsed = daysSinceWeekStart(weekISO);
+  const TODAY_IDX = clampDay(elapsed);
+  if (t.includes("yesterday")) return clampDay(elapsed - 1);
   if (t.includes("monday")) return 0;
   if (t.includes("tuesday")) return 1;
   if (t.includes("wednesday")) return 2;
@@ -68,7 +88,11 @@ export default function App() {
   const [userName, setUserName] = useState(() => localStorage.getItem("gc_user_name") || "");
   const [nameSet, setNameSet] = useState(() => !!localStorage.getItem("gc_user_name"));
 
-  const [selectedDay, setSelectedDay] = useState(TODAY_IDX);
+  // "Week of" comes from the sheet; it only advances when the report is finalized
+  const [weekOfISO, weekOfRef, setWeekOfISO] = useStateRef(localStorage.getItem("gc_week_of") || fallbackWeekISO());
+  const todayIdx = clampDay(daysSinceWeekStart(weekOfISO));
+  const isLateWeek = daysSinceWeekStart(weekOfISO) > 6;
+  const [selectedDay, setSelectedDay] = useState(todayIdx);
   const [entryType, setEntryType] = useState("sales");
   const [entries, setEntries] = useState({ 0: [], 1: [], 2: [], 3: [], 4: [] });
   const [currentTranscript, setCurrentTranscript] = useState("");
@@ -84,12 +108,36 @@ export default function App() {
 
   const [isRecording, isRecordingRef, setIsRecording] = useStateRef(false);
   const recognitionRef = useRef(null);
-  const confirmedDayRef = useRef(TODAY_IDX);
+  const confirmedDayRef = useRef(todayIdx);
 
   const [qaAnswers, setQaAnswers] = useState({ renewals: "", jeopardy: "", tssSupport: "", growth: "", comments: "" });
   const [qaRecording, setQaRecording] = useState(null); // which Q&A key is recording
   const qaMediaRecorderRef = useRef(null);
   const qaAudioChunksRef = useRef([]);
+
+  function applyWeekOf(iso) {
+    if (!iso) return;
+    try { localStorage.setItem("gc_week_of", iso); } catch (e) {}
+    setWeekOfISO(iso);
+    const idx = clampDay(daysSinceWeekStart(iso));
+    setSelectedDay(idx);
+    confirmedDayRef.current = idx;
+  }
+
+  async function loadWeekOf(id) {
+    if (!id) return;
+    try {
+      const res = await fetch("/api/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "weekInfo", spreadsheetId: id, tab: SPREADSHEET_TAB }),
+      });
+      const data = await res.json();
+      if (data.weekOf) applyWeekOf(data.weekOf);
+    } catch (e) { console.error("weekInfo error:", e); }
+  }
+
+  useEffect(() => { if (sheetConnected && spreadsheetId) loadWeekOf(spreadsheetId); }, [sheetConnected, spreadsheetId]);
 
   async function connectSheet() {
     const id = getSpreadsheetIdFromUrl(sheetUrl);
@@ -143,10 +191,10 @@ export default function App() {
           if (t) {
             setCurrentTranscript(t);
             setSyncStatus("");
-            const detDay = detectDayFromText(t);
+            const detDay = detectDayFromText(t, weekOfRef.current);
             const detType = detectTypeFromText(t);
             if (detDay !== null) { confirmedDayRef.current = detDay; setSelectedDay(detDay); }
-            else { confirmedDayRef.current = TODAY_IDX; }
+            else { confirmedDayRef.current = clampDay(daysSinceWeekStart(weekOfRef.current)); }
             if (detType) setEntryType(detType);
           } else {
             setSyncStatus("⚠️ No speech detected. Try again.");
@@ -328,6 +376,7 @@ Now process: "${precleaned}"` }],
 
   async function finalizeWeek() {
     if (!spreadsheetId) return;
+    if (!window.confirm(`Finalize the report for the week of ${formatWeekOf(weekOfISO)}?\n\nThis downloads the .xlsx, clears the template, and moves the sheet to the next week.`)) return;
     setIsFinalizing(true);
     setFinalizeStatus("Finalizing weekly report...");
     try {
@@ -352,6 +401,7 @@ Now process: "${precleaned}"` }],
           URL.revokeObjectURL(url);
         }
         setFinalizeStatus(`✅ "${data.fileName}" downloaded! Template ready for week of ${data.nextWeek}.`);
+        if (data.nextWeekISO) applyWeekOf(data.nextWeekISO);
         setExportUrl("");
       }
     } catch (e) {
@@ -527,7 +577,7 @@ Now process: "${precleaned}"` }],
           <div><div style={S.appTitle}>Field Task Logger</div><div style={S.appSub}>Garratt-Callahan · {userName}</div></div>
         </div>
         <div style={{display:"flex",gap:6}}>
-          <button style={S.signOutBtn} onClick={() => { localStorage.removeItem("gc_sheet_url"); localStorage.removeItem("gc_sheet_name"); setSheetConnected(false); setSpreadsheetId(null); setSheetUrl(""); setSyncStatus(""); }}>📋 Change Sheet</button>
+          <button style={S.signOutBtn} onClick={() => { localStorage.removeItem("gc_sheet_url"); localStorage.removeItem("gc_sheet_name"); localStorage.removeItem("gc_week_of"); setSheetConnected(false); setSpreadsheetId(null); setSheetUrl(""); setSyncStatus(""); }}>📋 Change Sheet</button>
           <button style={S.signOutBtn} onClick={() => { localStorage.removeItem("gc_user_name"); setNameSet(false); setUserName(""); }}>Reset</button>
         </div>
       </div>
@@ -535,8 +585,13 @@ Now process: "${precleaned}"` }],
       <div style={S.body}>
         <div style={S.sheetBadge}>
           <span>📊</span><span>{sheetName}</span>
-          <span style={{ marginLeft: "auto", color: "#64748b", fontSize: 11 }}>Week of {getCurrentWeekOf()}</span>
+          <span style={{ marginLeft: "auto", color: isLateWeek ? "#f59e0b" : "#64748b", fontSize: 11 }}>Week of {formatWeekOf(weekOfISO)}</span>
         </div>
+        {isLateWeek && (
+          <div style={{ ...S.statusMsg, marginBottom: 10, color: "#f59e0b" }}>
+            ⏳ The week of {formatWeekOf(weekOfISO)} hasn't been finalized yet. New entries still go to that week — finalize it when you're done.
+          </div>
+        )}
 
         <div style={S.dayRow}>
           {DAYS.map((d, i) => (
