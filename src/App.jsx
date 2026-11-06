@@ -1,4 +1,5 @@
-// GC Task Logger v3.2 - 20261016 — Week of driven by the sheet (late updates/finalize supported)
+// GC Task Logger v3.3 - 20261106 — API calls moved server-side (/api/transcribe, /api/cleanup)
+// was: GC Task Logger v3.2 - 20261016 — Week of driven by the sheet (late updates/finalize supported)
 import { useState, useRef, useEffect, useCallback } from "react";
 
 const SPREADSHEET_TAB = "Friday Report";
@@ -68,6 +69,21 @@ function detectTypeFromText(text) {
   for (const k of adminKw) if (t.includes(k)) return "admin"; // admin before service
   for (const k of serviceKw) if (t.includes(k)) return "service";
   return "sales";
+}
+
+// Send recorded audio to our server, which calls Whisper (key stays server-side)
+async function transcribeBlob(blob, mimeType) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  const res = await fetch("/api/transcribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ audio: btoa(bin), mimeType }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+  return (data.text || "").trim();
 }
 
 function useStateRef(initial) {
@@ -177,17 +193,7 @@ export default function App() {
         setIsRecording(false);
         setSyncStatus("🔄 Transcribing...");
         try {
-          const formData = new FormData();
-          formData.append("file", audioBlob, "recording." + (mimeType.includes("mp4") ? "mp4" : "webm"));
-          formData.append("model", "whisper-1");
-          formData.append("language", "en");
-          const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}` },
-            body: formData,
-          });
-          const data = await res.json();
-          const t = (data.text || "").trim();
+          const t = await transcribeBlob(audioBlob, mimeType);
           if (t) {
             setCurrentTranscript(t);
             setSyncStatus("");
@@ -199,7 +205,7 @@ export default function App() {
           } else {
             setSyncStatus("⚠️ No speech detected. Try again.");
           }
-        } catch(e) { setSyncStatus("⚠️ Transcription failed: " + e.message); }
+        } catch(e) { setSyncStatus("⚠️ Transcription error: " + e.message); }
       };
       mediaRecorder.start();
       mediaRecorderRef.current = mediaRecorder;
@@ -231,28 +237,14 @@ export default function App() {
     setIsProcessing(true); setAiProcessed("");
     const precleaned = preclean(currentTranscript);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/cleanup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: `You are a field sales assistant for Garratt-Callahan water treatment. The input may contain multiple activities. Split them into separate lines, one activity per line. Each line must: start with a capital letter, start with an action verb or customer name, never start with "I", be under 20 words, remove all filler words.
-
-Examples:
-"service call Omni hospital. sales call ABC hospital" →
-Serviced Omni Hospital.
-Called ABC Hospital for new business.
-
-"administrative work UCSD Health. service call Google services" →
-Completed administrative work at UCSD Health.
-Serviced Google Services Center.
-
-Now process: "${precleaned}"` }],
-        }),
+        body: JSON.stringify({ text: precleaned }),
       });
-      const data = await res.json();
-      const result = (data.content?.[0]?.text?.trim() || precleaned);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) console.error("AI cleanup error:", data.error || res.status);
+      const result = (data.text || precleaned);
       // Capitalize first letter of each line
       const capitalized = result.split("\n")
         .map(l => l.trim())
@@ -297,20 +289,11 @@ Now process: "${precleaned}"` }],
         setQaRecording(null);
         const blob = new Blob(qaAudioChunksRef.current, { type: mimeType });
         try {
-          const formData = new FormData();
-          formData.append("file", blob, "qa." + (mimeType.includes("mp4") ? "mp4" : "webm"));
-          formData.append("model", "whisper-1");
-          formData.append("language", "en");
-          const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}` },
-            body: formData,
-          });
-          const data = await res.json();
-          if (data.text) {
-            setQaAnswers(p => ({ ...p, [key]: (p[key] ? p[key] + " " : "") + data.text.trim() }));
+          const text = await transcribeBlob(blob, mimeType);
+          if (text) {
+            setQaAnswers(p => ({ ...p, [key]: (p[key] ? p[key] + " " : "") + text }));
           }
-        } catch(e) { console.error("QA transcription error:", e); }
+        } catch(e) { console.error("QA transcription error:", e); setSyncStatus("⚠️ Transcription error: " + e.message); }
       };
       rec.start();
       qaMediaRecorderRef.current = rec;
